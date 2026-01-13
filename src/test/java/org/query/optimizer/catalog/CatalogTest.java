@@ -1,9 +1,10 @@
 package org.query.optimizer.catalog;
 
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class CatalogTest {
     @Test
@@ -16,8 +17,8 @@ public class CatalogTest {
         ColumnStats stats = customers.getColumnStats("city");
         Object[] row = customers.getRow(0);
         String name = (String) customers.getValue(0, "name");
-        Assertions.assertTrue(name.equals("Alice"));
+        assertTrue(name.equals("Alice"));
         int age = (Integer) customers.getValue(0, "age");
-        Assertions.assertTrue(age == 30);
+        assertTrue(age == 30);
     }
 }
