@@ -1,9 +1,8 @@
 package org.query.optimizer.catalog;
 
 import java.io.BufferedReader;
+import java.io.FileReader;
 import java.io.IOException;
-import java.io.InputStream;
-import java.io.InputStreamReader;
 import java.util.*;
 
 /**
@@ -46,8 +45,7 @@ public class Catalog {
     public TableMetadata loadTableFromCSV(String tableName, String csvPath) throws IOException {
         List<String[]> rawData = new ArrayList<>();
 
-        try (InputStream is = getClass().getClassLoader().getResourceAsStream(csvPath);
-             BufferedReader br = new BufferedReader(new InputStreamReader(is))) {
+        try (BufferedReader br = new BufferedReader(new FileReader(csvPath))) {
             String line;
             while ((line = br.readLine()) != null) {
                 rawData.add(line.split(","));
@@ -119,6 +117,7 @@ public class Catalog {
                     nullCount++;
                     continue;
                 }
+                distinctValues.add(value);
                 switch (column.type()) {
                     case INTEGER -> {
                         int intVal = (Integer) value;
