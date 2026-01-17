@@ -1,5 +1,7 @@
 package org.query.optimizer;
 
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.query.optimizer.catalog.*;
 import org.query.optimizer.logical.Expression;
@@ -7,6 +9,9 @@ import org.query.optimizer.logical.Expression;
 import java.io.File;
 import java.io.IOException;
 import java.io.PrintWriter;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.Arrays;
 import java.util.List;
 
@@ -22,10 +27,38 @@ import static org.junit.jupiter.api.Assertions.*;
  * 4. Expressions evaluate correctly
  */
 public class FoundationTest {
+    private static final Catalog catalog = new Catalog();
+
+    @BeforeAll
+    static void setup() throws IOException {
+        Path outputDir = Paths.get("target/generated-test-resources");
+        if (!Files.exists(outputDir))
+            Files.createDirectory(outputDir);
+
+        // Create a simple test CSV
+        try (PrintWriter pw = new PrintWriter(new File(outputDir.toFile(),
+                "test_table.csv"))) {
+            pw.println("id:INTEGER,name:VARCHAR,value:FLOAT");
+            pw.println("1,Alice,100.5");
+            pw.println("2,Bob,200.75");
+            pw.println("3,Charlie,150.25");
+        }
+        // Create CSV with known statistics
+        try (PrintWriter pw = new PrintWriter(new File(outputDir.toFile(),
+                "stats_test.csv"))) {
+            pw.println("id:INTEGER,category:VARCHAR,score:INTEGER");
+            pw.println("1,A,100");
+            pw.println("2,B,200");
+            pw.println("3,A,150");
+            pw.println("4,C,175");
+            pw.println("5,B,125");
+        }
+    }
 
     @Test
     public void testCSVLoading() throws IOException {
-        TableMetadata table = getTestTable();
+        TableMetadata table = catalog.loadTableFromCSV("test_table",
+                "target/generated-test-resources/test_table.csv");
 
         // Verify basic properties
         assertEquals("test_table", table.getTableName());
@@ -37,25 +70,6 @@ public class FoundationTest {
         assertEquals(1, row0[0]);
         assertEquals("Alice", row0[1]);
         assertTrue(Math.abs((Float) row0[2] - 100.5f) < 0.01);
-
-        // Clean up
-        new File("test_table.csv").delete();
-    }
-
-    private static TableMetadata getTestTable() throws IOException {
-        File outputDir = new File("target/generated-test-resources");
-        outputDir.mkdirs();
-
-        // Create a simple test CSV
-        try (PrintWriter pw = new PrintWriter(new File(outputDir, "test_table.csv"))) {
-            pw.println("id:INTEGER,name:VARCHAR,value:FLOAT");
-            pw.println("1,Alice,100.5");
-            pw.println("2,Bob,200.75");
-            pw.println("3,Charlie,150.25");
-        }
-
-        Catalog catalog = new Catalog();
-        return catalog.loadTableFromCSV("test_table", "target/generated-test-resources/test_table.csv");
     }
 
     @Test
@@ -92,7 +106,8 @@ public class FoundationTest {
 
     @Test
     public void testStatistics() throws IOException {
-        TableMetadata table = getStatsTable();
+        TableMetadata table = catalog.loadTableFromCSV("stats_test",
+                "target/generated-test-resources/stats_test.csv");
 
         // Check ID statistics
         ColumnStats idStats = table.getColumnStats("id");
@@ -109,26 +124,6 @@ public class FoundationTest {
         ColumnStats scoreStats = table.getColumnStats("score");
         assertEquals(100, scoreStats.minValue());
         assertEquals(200, scoreStats.maxValue());
-
-        // Clean up
-        new File("stats_test.csv").delete();
-    }
-
-    private static TableMetadata getStatsTable() throws IOException {
-        File outputDir = new File("target/generated-test-resources");
-        outputDir.mkdirs();
-        // Create CSV with known statistics
-        try (PrintWriter pw = new PrintWriter(new File(outputDir, "stats_test.csv"))) {
-            pw.println("id:INTEGER,category:VARCHAR,score:INTEGER");
-            pw.println("1,A,100");
-            pw.println("2,B,200");
-            pw.println("3,A,150");
-            pw.println("4,C,175");
-            pw.println("5,B,125");
-        }
-
-        Catalog catalog = new Catalog();
-        return catalog.loadTableFromCSV("stats_test", "target/generated-test-resources/stats_test.csv");
     }
 
     @Test
@@ -185,5 +180,11 @@ public class FoundationTest {
 
         // Test SQL string generation
         assertEquals("(customers.age = 30)", eq.toSQLString());
+    }
+
+    @AfterAll
+    static void cleanup() throws IOException {
+        Files.delete(Paths.get("target/generated-test-resources/test_table.csv"));
+        Files.delete(Paths.get("target/generated-test-resources/stats_test.csv"));
     }
 }

@@ -30,6 +30,9 @@ public interface Expression {
 
     /* --- Column Reference --- */
     record ColumnRef(String tableName, String columnName) implements Expression {
+        public static ColumnRef from(String columnName) {
+            return new ColumnRef(null, columnName);
+        }
 
         @Override
         public Object evaluate(Object[] row, Schema schema) {
