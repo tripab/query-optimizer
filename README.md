@@ -160,6 +160,129 @@ Pretty printing automatically displays annotations:
 └── Scan[products] [rows=7, cost=0.07]
 ```
 
+## Milestone 2: Parsing & Logical Plans
+
+### Overview
+
+Milestone 2 implements SQL parsing, AST generation, and conversion to canonical logical plans. This establishes the
+foundation for query optimization by creating a clean, normalized representation of queries.
+
+### SQL Parser
+
+**Supported SQL Syntax:**
+
+```sql
+SELECT column1, column2, aggregate(column)
+FROM table1
+         INNER JOIN table2 ON condition
+    [
+         INNER JOIN table3 ON condition]
+WHERE condition
+GROUP BY column1, column2
+```
+
+**Features:**
+
+- Hand-written recursive descent parser
+- Regex-based tokenization
+- Support for qualified columns (table.column)
+- Binary operators: =, !=, >, >=, <, <=
+- Logical operators: AND, OR
+- Aggregate functions: COUNT, SUM, AVG, MIN, MAX
+- Literals: integers, floats, strings
+
+**Explicitly NOT Supported** (phase 2):
+
+- Subqueries, UNION, DISTINCT
+- Outer joins (LEFT, RIGHT, FULL)
+- Complex expressions (arithmetic, functions, CASE)
+- ORDER BY, LIMIT, HAVING
+- More than 3-way joins
+
+### AST Classes
+
+Complete Abstract Syntax Tree hierarchy in `AST.java`:
+
+```java
+SelectStmt
+├──
+
+SelectItem(abstract)
+│   ├──ColumnSelectItem        // Regular columns
+│   └──AggregateSelectItem     // COUNT(*), SUM(col), etc.
+├──
+
+FromClause(abstract)
+│   ├──TableRef                // Single table
+│   └──JoinClause              // INNER JOIN
+└──
+
+Expr(abstract)
+    ├──ColumnExpr              // Column reference
+    ├──LiteralExpr             // Constant value
+    └──BinaryExpr              // Operators
+```
+
+**Usage Example:**
+
+```java
+SQLParser parser = new SQLParser();
+AST.SelectStmt ast = parser.parse("SELECT name FROM products WHERE price > 100");
+System.out.
+
+println(ast); // Pretty-prints the AST
+```
+
+### Logical Operators
+
+Five concrete logical operators representing relational algebra:
+
+1. **LogicalScan** - Read from a table (leaf node)
+2. **LogicalFilter** - Apply predicate (WHERE)
+3. **LogicalProject** - Select columns (SELECT list)
+4. **LogicalJoin** - Combine relations (JOIN)
+5. **LogicalAggregate** - Group and aggregate (GROUP BY)
+
+### LogicalPlanBuilder (Visitor Pattern)
+
+Converts AST to logical plan with **canonical form enforcement**:
+
+**Canonical Form Rules:**
+
+1. **Split AND predicates** into separate Filter nodes
+    - Input: `WHERE a = 1 AND b = 2 AND c = 3`
+    - Output: 3 separate Filter nodes (one per predicate)
+2. **Separate Filter nodes** from other operators
+3. **Normalized expressions** (no redundancy)
+
+**Why Canonical Form?**
+
+- **Simplifies rules**: Each rule can assume a specific structure
+- **Enables optimization**: Easier to move/reorder filters
+- **Consistent representation**: Same query always produces same tree shape
+
+**Example:**
+
+```java
+Catalog catalog = new Catalog();
+catalog.
+
+loadTableFromCSV("products","products.csv");
+
+SQLParser parser = new SQLParser();
+LogicalPlanBuilder builder = new LogicalPlanBuilder(catalog);
+
+String sql = "SELECT name FROM products WHERE category = 'Electronics' AND price > 100";
+AST.SelectStmt ast = parser.parse(sql);
+LogicalNode plan = builder.build(ast);
+
+// Plan structure (canonical form):
+// Project[name]
+// └── Filter[(price > 100)]
+//     └── Filter[(category = 'Electronics')]
+//         └── Scan[products]
+```
+
 ## Running the Demo
 
 ### Build
@@ -170,7 +293,7 @@ cd query-optimizer
 mvn clean install
 ```
 
-### Run Demo
+### Run Demos
 
 Run the FoundationDemo class to see the Milestone 1 features in action.
 
@@ -182,35 +305,134 @@ Run the FoundationDemo class to see the Milestone 1 features in action.
 - Shows hardcoded logical plan with annotations
 - Demonstrates core interfaces
 
-### Run Tests
+Run the ParserAndLogicalPlansDemo class to see the Milestone 2 features in action.
 
-Run the FoundationTest class (runs automatically when you build with Maven without skipping tests) to see an end-to-end
-test for Milestone 1 features.
+**Expected Output:**
+Demonstrates 5 queries:
+
+1. Simple filter and projection
+2. Multiple filters (shows canonical form)
+3. Join with filter
+4. Multi-way join
+5. Aggregation with GROUP BY
+
+Each query shows: original SQL, parsed AST, logical plan tree and operator analysis
+
+## Example Queries
+
+### Query 1: Simple Filter
+
+```sql
+SELECT name, price
+FROM products
+WHERE category = 'Electronics'
+```
+
+**Logical Plan:**
+
+```
+└── Project[name, price]
+    └── Filter[(category = 'Electronics')]
+        └── Scan[products]
+```
+
+### Query 2: Canonical Form Demo
+
+```sql
+SELECT name
+FROM customers
+WHERE city = 'Seattle'
+  AND age > 30
+```
+
+**Logical Plan (Note: 2 separate Filter nodes):**
+
+```
+└── Project[name]
+    └── Filter[(age > 30)]
+        └── Filter[(city = 'Seattle')]
+            └── Scan[customers]
+```
+
+### Query 3: Join
+
+```sql
+SELECT c.name, o.total
+FROM customers c
+         INNER JOIN orders o ON c.id = o.customer_id
+WHERE c.city = 'Seattle'
+```
+
+**Logical Plan:**
+
+```
+└── Project[name, total]
+    └── Filter[(city = 'Seattle')]
+        └── Join[INNER, (c.id = o.customer_id)]
+            ├── Scan[customers]
+            └── Scan[orders]
+```
+
+### Query 4: Aggregation
+
+```sql
+SELECT category, COUNT(*), AVG(price)
+FROM products
+GROUP BY category
+```
+
+**Logical Plan:**
+
+```
+└── Project[category, count_*, avg_price]
+    └── Aggregate[GROUP BY: category; AGGS: COUNT(*) AS count_*, AVG(price) AS avg_price]
+        └── Scan[products]
+```
+
+## Run Tests
+
+These runs automatically when you build with Maven without skipping tests,
+
+- FoundationTest contains end-to-end tests for Milestone 1 features
+- ParsingAndLogicalPlansTest contains end-to-end tests for Milestone 2 features
 
 ## File Reference
 
-| File                         | Purpose                                          |
-|------------------------------|--------------------------------------------------|
-| `catalog/DataType.java`      | Supported data types (INTEGER, FLOAT, VARCHAR)   |
-| `catalog/Schema.java`        | Table schema with column definitions             |
-| `catalog/ColumnStats.java`   | Simple column statistics (NDV, min/max, nulls)   |
-| `catalog/TableMetadata.java` | Table metadata including schema, stats, and data |
-| `catalog/Catalog.java`       | Central metadata registry with CSV loading       |
-| `logical/LogicalNode.java`   | Base class for logical plan nodes                |
-| `logical/Expression.java`    | Expression trees (columns, literals, binary ops) |
-| `physical/PhysicalNode.java` | Base class for physical plan nodes               |
-| `optimizer/Rule.java`        | Interface for optimization rules                 |
-| `optimizer/CostModel.java`   | Interface for cost estimation with config        |
-| `executor/Iterator.java`     | Volcano-model execution interface                |
-| `Milestone1Demo.java`        | Demonstrates all Milestone 1 features            |
-| `test/Milestone1Test.java`   | Automated tests for validation                   |
+| File                                                       | Purpose                                          |
+|------------------------------------------------------------|--------------------------------------------------|
+| `org/query/optimizer/catalog/DataType.java`                | Supported data types (INTEGER, FLOAT, VARCHAR)   |
+| `org/query/optimizer/catalog/Schema.java`                  | Table schema with column definitions             |
+| `org/query/optimizer/catalog/ColumnStats.java`             | Simple column statistics (NDV, min/max, nulls)   |
+| `org/query/optimizer/catalog/TableMetadata.java`           | Table metadata including schema, stats, and data |
+| `org/query/optimizer/catalog/Catalog.java`                 | Central metadata registry with CSV loading       |
+| `org/query/optimizer/logical/LogicalNode.java`             | Base class for logical plan nodes                |
+| `org/query/optimizer/logical/Expression.java`              | Expression trees (columns, literals, binary ops) |
+| `org/query/optimizer/physical/PhysicalNode.java`           | Base class for physical plan nodes               |
+| `org/query/optimizer/optimizer/Rule.java`                  | Interface for optimization rules                 |
+| `org/query/optimizer/optimizer/CostModel.java`             | Interface for cost estimation with config        |
+| `org/query/optimizer/executor/Iterator.java`               | Volcano-model execution interface                |
+| `org/query/optimizer/FoundationDemo.java`                  | Demonstrates all Milestone 1 features            |
+| `org/query/optimizer/FoundationTest.java`                  | End-to-end tests for Milestone 1                 |
+| `org/query/optimizer/parser/AST.java`                      | Complete AST node hierarchy                      |
+| `org/query/optimizer/parser/SQLParser.java`                | Hand-written SQL parser                          |
+| `org/query/optimizer/parser/LogicalPlanBuilder.java`       | AST → Logical plan visitor                       |
+| `org/query/optimizer/logical/LogicalScan.java`             | Table scan operator                              |
+| `org/query/optimizer/logical/LogicalFilter.java`           | Filter/selection operator                        |
+| `org/query/optimizer/logical/LogicalProject.java`          | Projection operator                              |
+| `org/query/optimizer/logical/LogicalJoin.java`             | Join operator                                    |
+| `org/query/optimizer/logical/LogicalAggregate.java`        | Aggregation operator                             |
+| `org/query/optimizer/ParsingAndLogicalPlansDemo.java`      | Demonstrates all Milestone 2 features            |
+| `org/query/optimizer/test/ParsingAndLogicalPlansTest.java` | End-to-end tests for Milestone 1                 |
 
 ## What's Next?
 
-**Milestone 2** will add:
+**Milestone 3** will add:
 
-- SQL parser (hand-written or ANTLR)
-- AST classes
-- Logical plan operators (Scan, Filter, Project, Join)
-- AST → Logical plan conversion visitor
-- Canonical logical plan forms
+- Rule interface implementations
+- RuleEngine with fixpoint iteration
+- Core optimization rules:
+    - Predicate pushdown
+    - Projection pushdown
+    - Simple join reordering
+- Simple cost model
+- Cardinality estimation
