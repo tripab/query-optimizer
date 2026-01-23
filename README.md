@@ -283,19 +283,247 @@ LogicalNode plan = builder.build(ast);
 //         └── Scan[products]
 ```
 
-## Running the Demo
+## Milestone 3: Rule Engine & Optimization
 
-### Build
+### Overview
+
+Milestone 3 implements the core optimization engine: rule-based transformations, cost modeling, and cardinality
+estimation. This is where query plans get transformed into more efficient equivalent plans.
+
+### Rule Engine with Fixpoint Iteration
+
+**Architecture:**
+
+```
+RuleEngine
+├── Applies rules repeatedly until no changes (fixpoint)
+├── Bottom-up traversal (children optimized first)
+├── Configurable iteration limit
+└── Verbose mode for debugging
+```
+
+**Key Algorithm:**
+
+```java
+while(not fixpoint &&iterations<max){
+        for
+each rule:
+apply rule
+exhaustively to
+entire tree
+    if(
+no changes):
+        break // fixpoint reached
+        }
+```
+
+**Usage:**
+
+```java
+List<Rule> rules = Arrays.asList(
+        new PredicatePushdown(),
+        new ProjectionPushdown(),
+        new FilterMerge()
+);
+
+RuleEngine engine = new RuleEngine(rules, maxIterations);
+LogicalNode optimizedPlan = engine.optimize(initialPlan);
+```
+
+### Optimization Rules
+
+#### 1. Predicate Pushdown
+
+**Pattern:** `Filter → Join`  
+**Transform:** Push filter to appropriate join input
+
+**Algorithm:**
+
+1. Analyze which tables the predicate references
+2. If predicate references only left table → push to left child
+3. If predicate references only right table → push to right child
+4. If predicate references both → keep above join
+
+**Example:**
+
+```
+BEFORE:                          AFTER:
+Filter[city='Seattle']           Join[c.id = o.customer_id]
+└── Join[c.id = o.cust_id]      ├── Filter[city='Seattle']
+    ├── Scan[customers]         │   └── Scan[customers]
+    └── Scan[orders]            └── Scan[orders]
+```
+
+**Why it works:** For inner joins, filtering before or after produces same result, but filtering earlier reduces
+intermediate result size.
+
+#### 2. Projection Pushdown
+
+**Pattern:** `Project → Filter`  
+**Transform:** Swap to `Filter → Project`
+
+**Safety Check:**
+
+- Ensure filter predicate doesn't reference columns eliminated by projection
+- Only swap if safe
+
+**Example:**
+
+```
+BEFORE:                    AFTER:
+Project[name]              Filter[price > 100]
+└── Filter[price > 100]    └── Project[name]
+    └── Scan[products]         └── Scan[products]
+```
+
+**Why it works:** Filters don't change schema, and filtering first reduces data volume.
+
+#### 3. Filter Merge
+
+**Pattern:** `Filter → Filter`  
+**Transform:** Single filter with AND predicate
+
+**Example:**
+
+```
+BEFORE:                          AFTER:
+Filter[age > 30]                 Filter[(city='Seattle') AND (age > 30)]
+└── Filter[city='Seattle']       └── Scan[customers]
+    └── Scan[customers]
+```
+
+**Why it works:** Reduces operator overhead during execution. This reverses the canonical form after optimization is
+complete.
+
+### Cost Model
+
+**Formula:**
+
+```
+Cost = I/O_cost + CPU_cost
+
+I/O_cost  = pages_read * PAGE_COST
+CPU_cost  = tuples_processed * TUPLE_COST
+
+pages = ceil(rows / PAGE_SIZE)
+```
+
+**Configurable Parameters:**
+
+```java
+CostConfig {
+    PAGE_COST = 1.0         // Cost to read one page
+    TUPLE_COST = 0.01       // Cost to process one tuple
+    PAGE_SIZE = 100         // Tuples per page
+    COMPARISON_COST = 0.001 // Cost per comparison
+    HASH_COST = 0.005       // Cost to hash one tuple
+}
+```
+
+**Operator Costs:**
+
+| Operator   | Formula                                                               |
+|------------|-----------------------------------------------------------------------|
+| Scan       | `pages(table) * PAGE_COST + rows * TUPLE_COST`                        |
+| Filter     | `child_cost + rows * COMPARISON_COST`                                 |
+| Project    | `child_cost + rows * TUPLE_COST`                                      |
+| Join (NLJ) | `left_cost + right_cost + (left_rows * right_rows * COMPARISON_COST)` |
+| Aggregate  | `child_cost + rows * HASH_COST`                                       |
+
+**Usage:**
+
+```java
+CostModel costModel = new SimpleCostModel(catalog);
+
+// Estimate cost
+double cost = costModel.estimateCost(plan);
+
+// Estimate cardinality
+long rows = costModel.estimateCardinality(plan);
+
+// Custom configuration
+CostConfig config = new CostConfig(2.0, 0.02, 100);
+CostModel customModel = new SimpleCostModel(catalog, config);
+```
+
+### Cardinality Estimation
+
+**Techniques:**
+
+**1. Scan Cardinality**
+
+```
+cardinality(Scan[T]) = |T|  (table row count)
+```
+
+**2. Filter Selectivity**
+
+| Predicate Type    | Formula                                   |
+|-------------------|-------------------------------------------|
+| `col = value`     | `1 / NDV(col)`                            |
+| `col != value`    | `1 - (1 / NDV(col))`                      |
+| `col > value`     | `0.33` (heuristic)                        |
+| `col < value`     | `0.33` (heuristic)                        |
+| `pred1 AND pred2` | `sel(pred1) * sel(pred2)`                 |
+| `pred1 OR pred2`  | `sel(pred1) + sel(pred2) - (sel1 * sel2)` |
+
+```
+cardinality(Filter) = input_rows * selectivity
+```
+
+**3. Join Cardinality**
+
+For equality join `R.a = S.b`:
+
+```
+cardinality = (|R| * |S|) / max(NDV(a), NDV(b))
+```
+
+This assumes:
+
+- Uniform distribution
+- Independence
+- Foreign key-like relationships
+
+**4. Aggregate Cardinality**
+
+```
+cardinality(GroupBy[cols]) = min(input_rows, product of NDVs)
+cardinality(no GROUP BY)   = 1
+```
+
+**Example:**
+
+```java
+CardinalityEstimator estimator = new CardinalityEstimator(catalog);
+
+// Scan products (7 rows)
+LogicalScan scan = new LogicalScan("products");
+long scanCard = estimator.estimate(scan);  // 7
+
+// Filter category='Electronics' (NDV=2, so selectivity=0.5)
+Expression pred = ... // category = 'Electronics'
+LogicalFilter filter = new LogicalFilter(pred, scan);
+long filterCard = estimator.estimate(filter);  // ~3-4
+
+
+##
+Running the
+Demo
+
+###Build
 
 ```bash
-git clone https://github.com/tripab/query-optimizer
+git clone
+https://github.com/tripab/query-optimizer
 cd query-optimizer
-mvn clean install
+mvn clean
+install
 ```
 
 ### Run Demos
 
-Run the FoundationDemo class to see the Milestone 1 features in action.
+### Run the **FoundationDemo** class to see the Milestone 1 features in action.
 
 **Expected Output:**
 
@@ -305,7 +533,7 @@ Run the FoundationDemo class to see the Milestone 1 features in action.
 - Shows hardcoded logical plan with annotations
 - Demonstrates core interfaces
 
-Run the ParserAndLogicalPlansDemo class to see the Milestone 2 features in action.
+### Run the **ParserAndLogicalPlansDemo** class to see the Milestone 2 features in action.
 
 **Expected Output:**
 Demonstrates 5 queries:
@@ -318,9 +546,9 @@ Demonstrates 5 queries:
 
 Each query shows: original SQL, parsed AST, logical plan tree and operator analysis
 
-## Example Queries
+#### Example Queries
 
-### Query 1: Simple Filter
+#### Query 1: Simple Filter
 
 ```sql
 SELECT name, price
@@ -336,7 +564,7 @@ WHERE category = 'Electronics'
         └── Scan[products]
 ```
 
-### Query 2: Canonical Form Demo
+#### Query 2: Canonical Form Demo
 
 ```sql
 SELECT name
@@ -354,7 +582,7 @@ WHERE city = 'Seattle'
             └── Scan[customers]
 ```
 
-### Query 3: Join
+#### Query 3: Join
 
 ```sql
 SELECT c.name, o.total
@@ -373,7 +601,7 @@ WHERE c.city = 'Seattle'
             └── Scan[orders]
 ```
 
-### Query 4: Aggregation
+#### Query 4: Aggregation
 
 ```sql
 SELECT category, COUNT(*), AVG(price)
@@ -389,50 +617,103 @@ GROUP BY category
         └── Scan[products]
 ```
 
+### Run the **RuleEngineAndOptimizationsDemo** class to see the Milestone 3 features in action.
+
+**Expected Output:**
+Demonstrates 3 queries:
+
+1. Predicate pushdown with before/after comparison
+2. Multiple predicate pushdown in multi-way join
+3. Cost model sensitivity analysis
+
+Each query shows:
+
+- Initial unoptimized plan
+- Optimized plan with costs
+- Cost improvement percentage
+
+#### Example: Complete Optimization
+
+```sql
+SELECT c.name, o.total
+FROM customers c
+         INNER JOIN orders o ON c.id = o.customer_id
+WHERE c.city = 'Seattle'
+  AND o.total > 100
+```
+
+**Initial Plan (Unoptimized):**
+
+```
+Project[name, total] [rows=?, cost=?]
+└── Filter[(o.total > 100)]
+    └── Filter[(c.city = 'Seattle')]
+        └── Join[INNER, c.id = o.customer_id]
+            ├── Scan[customers] [rows=8]
+            └── Scan[orders] [rows=10]
+```
+
+**After Optimization:**
+
+```
+Project[name, total] [rows=2, cost=1.85]
+└── Join[INNER, c.id = o.customer_id] [rows=2, cost=1.75]
+    ├── Filter[(c.city = 'Seattle')] [rows=4, cost=0.12]
+    │   └── Scan[customers] [rows=8, cost=0.11]
+    └── Filter[(o.total > 100)] [rows=3, cost=0.14]
+        └── Scan[orders] [rows=10, cost=0.13]
+```
+
+**Optimizations Applied:**
+
+1. **Predicate Pushdown**: Both filters pushed below join
+2. **Cost Reduction**: Intermediate result size reduced from 80 to 12 rows
+3. **Improvement**: ~45% cost reduction
+
 ## Run Tests
 
 These runs automatically when you build with Maven without skipping tests,
 
 - FoundationTest contains end-to-end tests for Milestone 1 features
 - ParsingAndLogicalPlansTest contains end-to-end tests for Milestone 2 features
+- RuleEngineAndOptimizationsTest contains end-to-end tests for Milestone 3 features
 
 ## File Reference
 
-| File                                                       | Purpose                                          |
-|------------------------------------------------------------|--------------------------------------------------|
-| `org/query/optimizer/catalog/DataType.java`                | Supported data types (INTEGER, FLOAT, VARCHAR)   |
-| `org/query/optimizer/catalog/Schema.java`                  | Table schema with column definitions             |
-| `org/query/optimizer/catalog/ColumnStats.java`             | Simple column statistics (NDV, min/max, nulls)   |
-| `org/query/optimizer/catalog/TableMetadata.java`           | Table metadata including schema, stats, and data |
-| `org/query/optimizer/catalog/Catalog.java`                 | Central metadata registry with CSV loading       |
-| `org/query/optimizer/logical/LogicalNode.java`             | Base class for logical plan nodes                |
-| `org/query/optimizer/logical/Expression.java`              | Expression trees (columns, literals, binary ops) |
-| `org/query/optimizer/physical/PhysicalNode.java`           | Base class for physical plan nodes               |
-| `org/query/optimizer/optimizer/Rule.java`                  | Interface for optimization rules                 |
-| `org/query/optimizer/optimizer/CostModel.java`             | Interface for cost estimation with config        |
-| `org/query/optimizer/executor/Iterator.java`               | Volcano-model execution interface                |
-| `org/query/optimizer/FoundationDemo.java`                  | Demonstrates all Milestone 1 features            |
-| `org/query/optimizer/FoundationTest.java`                  | End-to-end tests for Milestone 1                 |
-| `org/query/optimizer/parser/AST.java`                      | Complete AST node hierarchy                      |
-| `org/query/optimizer/parser/SQLParser.java`                | Hand-written SQL parser                          |
-| `org/query/optimizer/parser/LogicalPlanBuilder.java`       | AST → Logical plan visitor                       |
-| `org/query/optimizer/logical/LogicalScan.java`             | Table scan operator                              |
-| `org/query/optimizer/logical/LogicalFilter.java`           | Filter/selection operator                        |
-| `org/query/optimizer/logical/LogicalProject.java`          | Projection operator                              |
-| `org/query/optimizer/logical/LogicalJoin.java`             | Join operator                                    |
-| `org/query/optimizer/logical/LogicalAggregate.java`        | Aggregation operator                             |
-| `org/query/optimizer/ParsingAndLogicalPlansDemo.java`      | Demonstrates all Milestone 2 features            |
-| `org/query/optimizer/test/ParsingAndLogicalPlansTest.java` | End-to-end tests for Milestone 1                 |
+| File                                                      | Purpose                                          |
+|-----------------------------------------------------------|--------------------------------------------------|
+| `org/query/optimizer/catalog/DataType.java`               | Supported data types (INTEGER, FLOAT, VARCHAR)   |
+| `org/query/optimizer/catalog/Schema.java`                 | Table schema with column definitions             |
+| `org/query/optimizer/catalog/ColumnStats.java`            | Simple column statistics (NDV, min/max, nulls)   |
+| `org/query/optimizer/catalog/TableMetadata.java`          | Table metadata including schema, stats, and data |
+| `org/query/optimizer/catalog/Catalog.java`                | Central metadata registry with CSV loading       |
+| `org/query/optimizer/logical/LogicalNode.java`            | Base class for logical plan nodes                |
+| `org/query/optimizer/logical/Expression.java`             | Expression trees (columns, literals, binary ops) |
+| `org/query/optimizer/physical/PhysicalNode.java`          | Base class for physical plan nodes               |
+| `org/query/optimizer/optimizer/Rule.java`                 | Interface for optimization rules                 |
+| `org/query/optimizer/optimizer/CostModel.java`            | Interface for cost estimation with config        |
+| `org/query/optimizer/executor/Iterator.java`              | Volcano-model execution interface                |
+| `org/query/optimizer/FoundationDemo.java`                 | Demonstrates all Milestone 1 features            |
+| `org/query/optimizer/FoundationTest.java`                 | End-to-end tests for Milestone 1                 |
+| `org/query/optimizer/parser/AST.java`                     | Complete AST node hierarchy                      |
+| `org/query/optimizer/parser/SQLParser.java`               | Hand-written SQL parser                          |
+| `org/query/optimizer/parser/LogicalPlanBuilder.java`      | AST → Logical plan visitor                       |
+| `org/query/optimizer/logical/LogicalScan.java`            | Table scan operator                              |
+| `org/query/optimizer/logical/LogicalFilter.java`          | Filter/selection operator                        |
+| `org/query/optimizer/logical/LogicalProject.java`         | Projection operator                              |
+| `org/query/optimizer/logical/LogicalJoin.java`            | Join operator                                    |
+| `org/query/optimizer/logical/LogicalAggregate.java`       | Aggregation operator                             |
+| `org/query/optimizer/ParsingAndLogicalPlansDemo.java`     | Demonstrates all Milestone 2 features            |
+| `org/query/optimizer/ParsingAndLogicalPlansTest.java`     | End-to-end tests for Milestone 2                 |
+| `org/query/optimizer/RuleEngine.java`                     | Fixpoint iteration engine                        |
+| `org/query/optimizer/rules/PredicatePushdown.java`        | Push filters below joins                         |
+| `org/query/optimizer/rules/ProjectionPushdown.java`       | Push projections below filters                   |
+| `org/query/optimizer/rules/FilterMerge.java`              | Merge consecutive filters                        |
+| `org/query/optimizer/SimpleCostModel.java`                | Cost estimation implementation                   |
+| `org/query/optimizer/CardinalityEstimator.java`           | Row count estimation                             |
+| `org/query/optimizer/RuleEngineAndOptimizationsDemo.java` | Demonstrates all Milestone 3 features            |
+| `org/query/optimizer/RuleEngineAndOptimizationsTest.java` | End-to-end tests for Milestone 3                 |
 
 ## What's Next?
 
-**Milestone 3** will add:
-
-- Rule interface implementations
-- RuleEngine with fixpoint iteration
-- Core optimization rules:
-    - Predicate pushdown
-    - Projection pushdown
-    - Simple join reordering
-- Simple cost model
-- Cardinality estimation
+**Milestone 4** will add Physical Execution
