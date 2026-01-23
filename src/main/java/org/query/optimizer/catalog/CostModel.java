@@ -39,18 +39,40 @@ public interface CostModel {
      */
     CostConfig getConfig();
 
-    record CostConfig(double pageCost, double tupleCost, int pageSize,
-                      double comparisonCost, double hashCost) {
-        public static CostConfig defaultConfig() {
-            return new CostConfig(1D, 0.01D, 100,
-                    0.001D, 0.005D);
+    /**
+     * Configuration object for cost model parameters.
+     * Makes it easy to experiment with different cost weightings.
+     */
+    class CostConfig {
+        // Cost to read/write one page from/to disk
+        public double PAGE_COST = 1.0;
+
+        // Cost to process one tuple in memory
+        public double TUPLE_COST = 0.01;
+
+        // Number of tuples that fit in one page
+        public int PAGE_SIZE = 100;
+
+        // Cost to perform one comparison
+        public double COMPARISON_COST = 0.001;
+
+        // Cost to hash one tuple
+        public double HASH_COST = 0.005;
+
+        public CostConfig() {
+            // Use defaults
+        }
+
+        public CostConfig(double pageCost, double tupleCost, int pageSize) {
+            this.PAGE_COST = pageCost;
+            this.TUPLE_COST = tupleCost;
+            this.PAGE_SIZE = pageSize;
         }
 
         @Override
         public String toString() {
-            return String.format("CostConfig[PAGE=%.2f, TUPLE=%.4f, PAGE_SIZE=%d, " +
-                            "COMPARISON_COST=%.2f, HASH_COST=%.2f]",
-                    pageCost, tupleCost, pageSize, comparisonCost, hashCost);
+            return String.format("CostConfig[PAGE=%.2f, TUPLE=%.4f, PAGE_SIZE=%d]",
+                    PAGE_COST, TUPLE_COST, PAGE_SIZE);
         }
     }
 }

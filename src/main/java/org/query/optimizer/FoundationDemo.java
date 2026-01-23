@@ -10,6 +10,8 @@ import org.query.optimizer.logical.LogicalNode;
 import java.io.File;
 import java.io.IOException;
 import java.io.PrintWriter;
+import java.nio.file.Files;
+import java.nio.file.Paths;
 import java.util.Collections;
 import java.util.List;
 
@@ -82,6 +84,7 @@ public class FoundationDemo {
             System.out.println("Expression trees");
             System.out.println("Plan annotations and pretty printing");
 
+            deleteSampleData();
         } catch (Exception e) {
             System.err.println("Error: " + e.getMessage());
             e.printStackTrace();
@@ -134,6 +137,12 @@ public class FoundationDemo {
             pw.println("9,3,2,4,119.96");
             pw.println("10,4,5,1,399.99");
         }
+    }
+
+    private static void deleteSampleData() throws IOException {
+        Files.delete(Paths.get("target/generated-test-resources/customers.csv"));
+        Files.delete(Paths.get("target/generated-test-resources/products.csv"));
+        Files.delete(Paths.get("target/generated-test-resources/orders.csv"));
     }
 
     /**
