@@ -12,6 +12,7 @@ import org.query.optimizer.logical.Expression.Literal;
 import java.io.File;
 import java.io.IOException;
 import java.io.PrintWriter;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -22,7 +23,7 @@ public class ExpressionTest {
         TableMetadata customers = getTableMetadata();
 
         Schema schema = customers.getSchema();
-        Object[] row = customers.getRow(0);
+        Map<Schema.Column, Object> row = customers.getRow(0);
 
         Expression expr = new BinaryOp(BinaryOp.Operator.AND,
                 new BinaryOp(Operator.EQ,

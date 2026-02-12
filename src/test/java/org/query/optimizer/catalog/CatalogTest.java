@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 import java.io.File;
 import java.io.IOException;
 import java.io.PrintWriter;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -17,7 +18,7 @@ public class CatalogTest {
         long rowCount = customers.getRowCount();
         Schema schema = customers.getSchema();
         ColumnStats stats = customers.getColumnStats("city");
-        Object[] row = customers.getRow(0);
+        Map<Schema.Column, Object> row = customers.getRow(0);
         String name = (String) customers.getValue(0, "name");
         assertTrue(name.equals("Alice"));
         int age = (Integer) customers.getValue(0, "age");

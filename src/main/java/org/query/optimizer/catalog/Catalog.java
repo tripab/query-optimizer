@@ -48,7 +48,9 @@ public class Catalog {
         try (BufferedReader br = new BufferedReader(new FileReader(csvPath))) {
             String line;
             while ((line = br.readLine()) != null) {
-                rawData.add(line.split(","));
+                // Simple CSV parsing (no quoted commas support for simplicity)
+                String[] values = line.split(",");
+                rawData.add(values);
             }
         }
 
@@ -57,7 +59,7 @@ public class Catalog {
         }
 
         // Parse header to build schema
-        String[] header = rawData.get(0);
+        String[] header = rawData.getFirst();
         List<Schema.Column> columns = new ArrayList<>();
         for (String colDef : header) {
             String[] parts = colDef.trim().split(":");
@@ -70,7 +72,7 @@ public class Catalog {
         }
 
         // Parse data rows
-        List<Object[]> data = new ArrayList<>();
+        List<Map<Schema.Column, Object>> data = new ArrayList<>();
         for (int i = 1; i < rawData.size(); i++) {
             String[] row = rawData.get(i);
             if (row.length != columns.size()) {
@@ -78,9 +80,9 @@ public class Catalog {
                         "Row " + i + " has wrong number of columns: expected " +
                                 columns.size() + ", got " + row.length);
             }
-            Object[] parsedRow = new Object[columns.size()];
+            Map<Schema.Column, Object> parsedRow = new HashMap<>();
             for (int j = 0; j < columns.size(); j++) {
-                parsedRow[j] = columns.get(j).type().parse(row[j]);
+                parsedRow.put(columns.get(j), columns.get(j).type().parse(row[j]));
             }
             data.add(parsedRow);
         }
@@ -99,10 +101,11 @@ public class Catalog {
     /**
      * Collect simple statistics for a table.
      * Computes NDV, min, max, and null count for each column.
+     * Also builds histograms for numeric columns.
      */
     private void collectStatistics(TableMetadata table) {
         Schema schema = table.getSchema();
-        List<Object[]> data = table.getData();
+        List<Map<Schema.Column, Object>> data = table.getData();
 
         for (int colIdx = 0; colIdx < schema.columnCount(); colIdx++) {
             Schema.Column column = schema.getColumn(colIdx);
@@ -111,8 +114,8 @@ public class Catalog {
             Object minValue = null, maxValue = null;
             long nullCount = 0;
 
-            for (Object[] row : data) {
-                Object value = row[colIdx];
+            for (Map<Schema.Column, Object> row : data) {
+                Object value = row.get(schema.getColumn(colIdx));
                 if (value == null) {
                     nullCount++;
                     continue;
@@ -158,6 +161,9 @@ public class Catalog {
 
             table.addColumnStats(stats);
         }
+
+        // Build histograms for numeric columns
+        HistogramBuilder.buildHistograms(table);
     }
 
     /**
@@ -173,6 +179,10 @@ public class Catalog {
                 ColumnStats stats = table.getColumnStats(col.name());
                 if (stats != null) {
                     System.out.println("    " + stats);
+                }
+                Histogram<?> histogram = table.getHistogram(col.name());
+                if (histogram != null) {
+                    System.out.println("    " + histogram.getSummary());
                 }
             }
             System.out.println();

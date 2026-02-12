@@ -158,7 +158,7 @@ public interface AST {
     /**
      * Literal value in an expression.
      */
-    record LiteralExpr(Object value) implements Expr {
+    record LiteralExpr<T extends Comparable<? super T>>(T value) implements Expr {
         @Override
         public String toString() {
             if (value instanceof String) {

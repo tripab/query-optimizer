@@ -14,6 +14,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -66,10 +67,10 @@ public class FoundationTest {
         assertEquals(3, table.getSchema().columnCount());
 
         // Verify we can access data
-        Object[] row0 = table.getRow(0);
-        assertEquals(1, row0[0]);
-        assertEquals("Alice", row0[1]);
-        assertTrue(Math.abs((Float) row0[2] - 100.5f) < 0.01);
+        Map<Schema.Column, Object> row0 = table.getRow(0);
+        assertEquals(1, row0.get(table.getSchema().getColumn(0)));
+        assertEquals("Alice", row0.get(table.getSchema().getColumn(1)));
+        assertTrue(Math.abs((Float) row0.get(table.getSchema().getColumn(2)) - 100.5f) < 0.01);
     }
 
     @Test
@@ -82,10 +83,10 @@ public class FoundationTest {
         );
         Schema schema = new Schema(columns);
 
-        List<Object[]> data = Arrays.asList(
-                new Object[]{1, "Alice", 30},
-                new Object[]{2, "Bob", 25},
-                new Object[]{3, "Charlie", 35}
+        List<Map<Schema.Column, Object>> data = Arrays.asList(
+                Map.of(columns.get(0), 1, columns.get(1), "Alice", columns.get(2), 30),
+                Map.of(columns.get(0), 2, columns.get(1), "Bob", columns.get(2), 25),
+                Map.of(columns.get(0), 3, columns.get(1), "Charlie", columns.get(2), 35)
         );
 
         TableMetadata table = new TableMetadata("test", schema, data);
@@ -136,7 +137,7 @@ public class FoundationTest {
         );
         Schema schema = new Schema(columns);
 
-        Object[] row = new Object[]{1, "Alice", 30};
+        Map<Schema.Column, Object> row = Map.of(columns.get(0), 1, columns.get(1), "Alice", columns.get(2), 30);
 
         // Test column reference
         Expression.ColumnRef idRef = new Expression.ColumnRef("customers", "id");

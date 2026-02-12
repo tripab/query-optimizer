@@ -2,6 +2,8 @@ package org.query.optimizer.logical;
 
 import org.query.optimizer.catalog.Schema;
 
+import java.util.Map;
+
 /**
  * Represents expressions used in queries (predicates, projections, etc.).
  * <p>
@@ -20,7 +22,7 @@ public interface Expression {
      * @param schema The schema defining column positions
      * @return The result of evaluation
      */
-    Object evaluate(Object[] row, Schema schema);
+    Object evaluate(Map<Schema.Column, Object> row, Schema schema);
 
     String toSQLString();
 
@@ -35,8 +37,8 @@ public interface Expression {
         }
 
         @Override
-        public Object evaluate(Object[] row, Schema schema) {
-            return row[schema.getColumnIndex(columnName)];
+        public Object evaluate(Map<Schema.Column, Object> row, Schema schema) {
+            return row.get(schema.getColumn(columnName));
         }
 
         public String getQualifiedName() {
@@ -50,10 +52,10 @@ public interface Expression {
     }
 
     /* --- Literal --- */
-    record Literal(Object value) implements Expression {
+    record Literal<T extends Comparable<? super T>>(T value) implements Expression {
 
         @Override
-        public Object evaluate(Object[] row, Schema schema) {
+        public Object evaluate(Map<Schema.Column, Object> row, Schema schema) {
             return value;
         }
 
@@ -90,7 +92,7 @@ public interface Expression {
         }
 
         @Override
-        public Object evaluate(Object[] row, Schema schema) {
+        public Object evaluate(Map<Schema.Column, Object> row, Schema schema) {
             Object leftVal = left.evaluate(row, schema);
             Object rightVal = right.evaluate(row, schema);
 

@@ -170,11 +170,10 @@ public class LogicalPlanBuilder {
                     return Expression.ColumnRef.from(col.columnName());
                 }
             }
-            case AST.LiteralExpr lit -> {
+            case AST.LiteralExpr<?> lit -> {
                 return new Expression.Literal(lit.value());
             }
             case AST.BinaryExpr binary -> {
-
                 Expression left = convertExpression(binary.left());
                 Expression right = convertExpression(binary.right());
                 Expression.BinaryOp.Operator op = convertOperator(binary.operator());

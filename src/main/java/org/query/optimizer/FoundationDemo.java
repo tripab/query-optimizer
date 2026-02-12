@@ -140,9 +140,9 @@ public class FoundationDemo {
     }
 
     private static void deleteSampleData() throws IOException {
-        Files.delete(Paths.get("target/generated-test-resources/customers.csv"));
-        Files.delete(Paths.get("target/generated-test-resources/products.csv"));
-        Files.delete(Paths.get("target/generated-test-resources/orders.csv"));
+        Files.delete(Paths.get("target/generated-resources/customers.csv"));
+        Files.delete(Paths.get("target/generated-resources/products.csv"));
+        Files.delete(Paths.get("target/generated-resources/orders.csv"));
     }
 
     /**

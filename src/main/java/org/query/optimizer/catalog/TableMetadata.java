@@ -12,16 +12,18 @@ public class TableMetadata {
     private final Schema schema;
     private final long rowCount;
     private final Map<String, ColumnStats> columnStats;
+    private final Map<String, Histogram<?>> histograms;
 
     // Reference to actual data (in-memory for this version)
-    private final List<Object[]> data;
+    private final List<Map<Schema.Column, Object>> data;
 
-    public TableMetadata(String tableName, Schema schema, List<Object[]> data) {
+    public TableMetadata(String tableName, Schema schema, List<Map<Schema.Column, Object>> data) {
         this.tableName = tableName;
         this.schema = schema;
+        this.data = List.copyOf(data);
         this.rowCount = data.size();
         this.columnStats = new HashMap<>();
-        this.data = List.copyOf(data);
+        this.histograms = new HashMap<>();
     }
 
     public String getTableName() {
@@ -36,7 +38,7 @@ public class TableMetadata {
         return rowCount;
     }
 
-    public List<Object[]> getData() {
+    public List<Map<Schema.Column, Object>> getData() {
         return data;
     }
 
@@ -44,7 +46,7 @@ public class TableMetadata {
      * Add statistics for a column. Called during statistics collection.
      */
     public void addColumnStats(ColumnStats stats) {
-        this.columnStats.put(stats.columnName().toLowerCase(), stats);
+        columnStats.put(stats.columnName().toLowerCase(), stats);
     }
 
     public ColumnStats getColumnStats(String columnName) {
@@ -55,18 +57,44 @@ public class TableMetadata {
         return columnStats.containsKey(columnName.toLowerCase());
     }
 
+    /**
+     * Add a histogram for a column.
+     */
+    public void addHistogram(Histogram<?> histogram) {
+        histograms.put(histogram.getColumnName().toLowerCase(), histogram);
+    }
+
+    /**
+     * Get histogram for a column.
+     */
+    public Histogram<?> getHistogram(String columnName) {
+        return histograms.get(columnName.toLowerCase());
+    }
+
+    /**
+     * Check if histogram is available for a column.
+     */
+    public boolean hasHistogram(String columnName) {
+        return histograms.containsKey(columnName.toLowerCase());
+    }
+
     @Override
     public String toString() {
         return String.format("Table[%s, rows=%d, schema=%s]",
                 tableName, rowCount, schema);
     }
 
-    public Object[] getRow(int index) {
+    /**
+     * Get a single row by index (for testing/debugging).
+     */
+    public Map<Schema.Column, Object> getRow(int index) {
         return data.get(index);
     }
 
+    /**
+     * Get value from a specific row and column.
+     */
     public Object getValue(int rowIndex, String columnName) {
-        int colIndex = schema.getColumnIndex(columnName);
-        return data.get(rowIndex)[colIndex];
+        return data.get(rowIndex).get(schema.getColumn(columnName));
     }
 }
