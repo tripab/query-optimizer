@@ -186,27 +186,23 @@ public class HistogramDemo {
         System.out.printf("Improvement:     %.1fx better\n", ndvError / histError);
     }
 
-    private static void demoQueryImpact(Catalog catalog) {
+    private static void demoQueryImpact(Catalog catalog) throws IOException {
         CostModel costModelWithHist = new SimpleCostModel(catalog);
 
         // Create a temporary catalog without histograms for comparison
         Catalog catalogNoHist = new Catalog();
-        try {
-            catalogNoHist.loadTableFromCSV("sales",
-                    "target/generated-resources/sales.csv");
-            // Remove histograms
-            TableMetadata table = catalogNoHist.getTableMetadata("sales");
-            // Histograms are already built, but we can simulate by using NDV-only
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
+        catalogNoHist.loadTableFromCSV("sales",
+                "target/generated-resources/sales.csv");
+        // Remove histograms
+        TableMetadata table = catalogNoHist.getTableMetadata("sales");
+        // Histograms are already built, but we can simulate by using NDV-only
 
         // Build a simple query plan
         LogicalScan scan = new LogicalScan("sales");
         Expression predicate = new Expression.BinaryOp(
                 Expression.BinaryOp.Operator.GT,
                 new Expression.ColumnRef("sales", "amount"),
-                new Expression.Literal<Integer>(2000)
+                new Expression.Literal<>(2000)
         );
         LogicalFilter filter = new LogicalFilter(predicate, scan);
 

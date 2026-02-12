@@ -27,68 +27,63 @@ import java.util.List;
  */
 public class FoundationDemo {
 
-    public static void main(String[] args) {
-        try {
-            System.out.println("=== Query Optimizer - Milestone 1 Demo ===\n");
+    static void main() throws IOException {
+        System.out.println("=== Query Optimizer - Milestone 1 Demo ===\n");
 
-            // Step 1: Create sample CSV files
-            System.out.println("Step 1: Creating sample data files...");
-            createSampleData();
-            System.out.println("Created: customers.csv, products.csv, orders.csv\n");
+        // Step 1: Create sample CSV files
+        System.out.println("Step 1: Creating sample data files...");
+        createSampleData();
+        System.out.println("Created: customers.csv, products.csv, orders.csv\n");
 
-            // Step 2: Initialize catalog and load tables
-            System.out.println("Step 2: Loading tables into catalog...");
-            Catalog catalog = new Catalog();
+        // Step 2: Initialize catalog and load tables
+        System.out.println("Step 2: Loading tables into catalog...");
+        Catalog catalog = new Catalog();
 
-            TableMetadata customers = catalog.loadTableFromCSV("customers", "target/generated-resources/customers.csv");
-            TableMetadata products = catalog.loadTableFromCSV("products", "target/generated-resources/products.csv");
-            TableMetadata orders = catalog.loadTableFromCSV("orders", "target/generated-resources/orders.csv");
+        TableMetadata customers = catalog.loadTableFromCSV("customers", "target/generated-resources/customers.csv");
+        TableMetadata products = catalog.loadTableFromCSV("products", "target/generated-resources/products.csv");
+        TableMetadata orders = catalog.loadTableFromCSV("orders", "target/generated-resources/orders.csv");
 
-            System.out.println("Loaded 3 tables\n");
+        System.out.println("Loaded 3 tables\n");
 
-            // Step 3: Display catalog contents
-            System.out.println("Step 3: Catalog contents with statistics:");
-            catalog.printCatalog();
+        // Step 3: Display catalog contents
+        System.out.println("Step 3: Catalog contents with statistics:");
+        catalog.printCatalog();
 
-            // Step 4: Query some metadata
-            System.out.println("Step 4: Querying metadata...");
-            System.out.println("Customers table has " + customers.getRowCount() + " rows");
-            System.out.println("Customers schema: " + customers.getSchema());
+        // Step 4: Query some metadata
+        System.out.println("Step 4: Querying metadata...");
+        System.out.println("Customers table has " + customers.getRowCount() + " rows");
+        System.out.println("Customers schema: " + customers.getSchema());
 
-            ColumnStats cityStats = customers.getColumnStats("city");
-            System.out.println("City column stats: " + cityStats);
-            System.out.println();
+        ColumnStats cityStats = customers.getColumnStats("city");
+        System.out.println("City column stats: " + cityStats);
+        System.out.println();
 
-            // Step 5: Create a hardcoded logical plan
-            System.out.println("Step 5: Creating a hardcoded logical plan...");
-            System.out.println("Query (conceptual): SELECT name, price FROM products WHERE category = 'Electronics'\n");
+        // Step 5: Create a hardcoded logical plan
+        System.out.println("Step 5: Creating a hardcoded logical plan...");
+        System.out.println("Query (conceptual): SELECT name, price FROM products WHERE category = 'Electronics'\n");
 
-            LogicalNode plan = createSamplePlan();
+        LogicalNode plan = createSamplePlan();
 
-            // Step 6: Add some sample annotations
-            System.out.println("Step 6: Adding optimizer annotations...");
-            annotatePlan(plan, products);
+        // Step 6: Add some sample annotations
+        System.out.println("Step 6: Adding optimizer annotations...");
+        annotatePlan(plan, products);
 
-            // Step 7: Pretty print the plan
-            System.out.println("Step 7: Logical plan with annotations:");
-            System.out.println(plan.toPrettyString());
+        // Step 7: Pretty print the plan
+        System.out.println("Step 7: Logical plan with annotations:");
+        System.out.println(plan.toPrettyString());
 
-            // Step 8: Show interface usage
-            System.out.println("Step 8: Demonstrating core interfaces...");
-            demonstrateInterfaces();
+        // Step 8: Show interface usage
+        System.out.println("Step 8: Demonstrating core interfaces...");
+        demonstrateInterfaces();
 
-            System.out.println("\n=== Milestone 1 Complete ===");
-            System.out.println("Catalog with statistics");
-            System.out.println("CSV loading");
-            System.out.println("Core interfaces (LogicalNode, PhysicalNode, Rule, CostModel, Iterator)");
-            System.out.println("Expression trees");
-            System.out.println("Plan annotations and pretty printing");
+        System.out.println("\n=== Milestone 1 Complete ===");
+        System.out.println("Catalog with statistics");
+        System.out.println("CSV loading");
+        System.out.println("Core interfaces (LogicalNode, PhysicalNode, Rule, CostModel, Iterator)");
+        System.out.println("Expression trees");
+        System.out.println("Plan annotations and pretty printing");
 
-            deleteSampleData();
-        } catch (Exception e) {
-            System.err.println("Error: " + e.getMessage());
-            e.printStackTrace();
-        }
+        deleteSampleData();
     }
 
     /**
@@ -185,7 +180,7 @@ public class FoundationDemo {
         Expression expr = new Expression.BinaryOp(
                 Expression.BinaryOp.Operator.EQ,
                 new Expression.ColumnRef("products", "category"),
-                new Expression.Literal("Electronics")
+                new Expression.Literal<>("Electronics")
         );
         System.out.println("  Expression: " + expr.toSQLString());
     }
