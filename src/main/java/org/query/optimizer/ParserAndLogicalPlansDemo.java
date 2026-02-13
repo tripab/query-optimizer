@@ -4,8 +4,12 @@ import org.query.optimizer.catalog.Catalog;
 import org.query.optimizer.logical.LogicalNode;
 import org.query.optimizer.parser.*;
 
+import java.io.File;
 import java.io.FileNotFoundException;
+import java.io.IOException;
 import java.io.PrintWriter;
+import java.nio.file.Files;
+import java.nio.file.Paths;
 
 /**
  * Demonstration of parsing and logical plans functionality.
@@ -26,9 +30,9 @@ public class ParserAndLogicalPlansDemo {
             System.out.println("Setting up sample data ...");
             createSampleData();
             Catalog catalog = new Catalog();
-            catalog.loadTableFromCSV("customers", "customers.csv");
-            catalog.loadTableFromCSV("products", "products.csv");
-            catalog.loadTableFromCSV("orders", "orders.csv");
+            catalog.loadTableFromCSV("customers", "target/generated-resources/customers.csv");
+            catalog.loadTableFromCSV("products", "target/generated-resources/products.csv");
+            catalog.loadTableFromCSV("orders", "target/generated-resources/orders.csv");
             System.out.println("Loaded 3 tables\n");
 
             // create parser and plan builder
@@ -66,6 +70,7 @@ public class ParserAndLogicalPlansDemo {
             String sql5 = "SELECT category, COUNT(*), AVG(price) FROM products GROUP BY category";
             demonstrateQuery(sql5, parser, planBuilder);
 
+            deleteSampleData();
             System.out.println("\n=== Milestone 2 Complete ===");
             System.out.println("SQL parsing");
             System.out.println("AST generation");
@@ -117,8 +122,11 @@ public class ParserAndLogicalPlansDemo {
     }
 
     private static void createSampleData() throws FileNotFoundException {
+        File outputDir = new File("target/generated-resources");
+        outputDir.mkdirs();
+
         // Customers
-        try (PrintWriter pw = new PrintWriter("customers.csv")) {
+        try (PrintWriter pw = new PrintWriter(new File(outputDir, "customers.csv"))) {
             pw.println("id:INTEGER,name:VARCHAR,city:VARCHAR,age:INTEGER");
             pw.println("1,Alice,Seattle,30");
             pw.println("2,Bob,Portland,25");
@@ -131,7 +139,7 @@ public class ParserAndLogicalPlansDemo {
         }
 
         // Products
-        try (PrintWriter pw = new PrintWriter("products.csv")) {
+        try (PrintWriter pw = new PrintWriter(new File(outputDir, "products.csv"))) {
             pw.println("id:INTEGER,name:VARCHAR,category:VARCHAR,price:FLOAT");
             pw.println("1,Laptop,Electronics,999.99");
             pw.println("2,Mouse,Electronics,29.99");
@@ -143,7 +151,7 @@ public class ParserAndLogicalPlansDemo {
         }
 
         // Orders
-        try (PrintWriter pw = new PrintWriter("orders.csv")) {
+        try (PrintWriter pw = new PrintWriter(new File(outputDir, "orders.csv"))) {
             pw.println("id:INTEGER,customer_id:INTEGER,product_id:INTEGER,quantity:INTEGER,total:FLOAT");
             pw.println("1,1,1,1,999.99");
             pw.println("2,1,2,2,59.98");
@@ -156,5 +164,11 @@ public class ParserAndLogicalPlansDemo {
             pw.println("9,3,2,4,119.96");
             pw.println("10,4,5,1,399.99");
         }
+    }
+
+    private static void deleteSampleData() throws IOException {
+        Files.delete(Paths.get("target/generated-resources/customers.csv"));
+        Files.delete(Paths.get("target/generated-resources/products.csv"));
+        Files.delete(Paths.get("target/generated-resources/orders.csv"));
     }
 }

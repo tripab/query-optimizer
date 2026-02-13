@@ -137,8 +137,10 @@ public class FoundationTest {
         );
         Schema schema = new Schema(columns);
 
-        Map<Schema.Column, Object> row = Map.of(columns.get(0), 1, columns.get(1), "Alice", columns.get(2), 30);
-
+        Tuple row = new Tuple();
+        row.add(new Attribute(columns.get(0), 1));
+        row.add(new Attribute(columns.get(1), "Alice"));
+        row.add(new Attribute(columns.get(2), 30));
         // Test column reference
         Expression.ColumnRef idRef = new Expression.ColumnRef("customers", "id");
         assertEquals(1, idRef.evaluate(row, schema));

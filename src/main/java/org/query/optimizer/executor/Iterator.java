@@ -1,5 +1,7 @@
 package org.query.optimizer.executor;
 
+import org.query.optimizer.catalog.Tuple;
+
 /**
  * Iterator interface for the Volcano/Iterator execution model.
  * <p>
@@ -32,7 +34,7 @@ public interface Iterator {
      *
      * @return The next tuple as an Object array, or null if no more tuples
      */
-    Object[] next();
+    Tuple next();
 
     /**
      * Clean up resources. Called once after all tuples have been consumed.

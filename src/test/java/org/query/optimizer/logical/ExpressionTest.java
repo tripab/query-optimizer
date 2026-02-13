@@ -1,9 +1,7 @@
 package org.query.optimizer.logical;
 
 import org.junit.jupiter.api.Test;
-import org.query.optimizer.catalog.Catalog;
-import org.query.optimizer.catalog.Schema;
-import org.query.optimizer.catalog.TableMetadata;
+import org.query.optimizer.catalog.*;
 import org.query.optimizer.logical.Expression.BinaryOp;
 import org.query.optimizer.logical.Expression.BinaryOp.Operator;
 import org.query.optimizer.logical.Expression.ColumnRef;
@@ -32,7 +30,11 @@ public class ExpressionTest {
                 new BinaryOp(Operator.GT,
                         new ColumnRef("customers", "age"),
                         new Literal(25)));
-        assertTrue((Boolean) expr.evaluate(row, schema));
+        Tuple tuple = new Tuple();
+        for (Map.Entry<Schema.Column, Object> entry : row.entrySet()) {
+            tuple.add(new Attribute(entry.getKey(), entry.getValue()));
+        }
+        assertTrue((Boolean) expr.evaluate(tuple, schema));
         assertEquals("((customers.name = 'Alice') AND (customers.age > 25))",
                 expr.toSQLString());
     }

@@ -1,8 +1,7 @@
 package org.query.optimizer.logical;
 
 import org.query.optimizer.catalog.Schema;
-
-import java.util.Map;
+import org.query.optimizer.catalog.Tuple;
 
 /**
  * Represents expressions used in queries (predicates, projections, etc.).
@@ -22,7 +21,7 @@ public interface Expression {
      * @param schema The schema defining column positions
      * @return The result of evaluation
      */
-    Object evaluate(Map<Schema.Column, Object> row, Schema schema);
+    Object evaluate(Tuple row, Schema schema);
 
     String toSQLString();
 
@@ -37,8 +36,8 @@ public interface Expression {
         }
 
         @Override
-        public Object evaluate(Map<Schema.Column, Object> row, Schema schema) {
-            return row.get(schema.getColumn(columnName));
+        public Object evaluate(Tuple row, Schema schema) {
+            return row.find(schema.getColumn(columnName));
         }
 
         public String getQualifiedName() {
@@ -55,7 +54,7 @@ public interface Expression {
     record Literal<T extends Comparable<? super T>>(T value) implements Expression {
 
         @Override
-        public Object evaluate(Map<Schema.Column, Object> row, Schema schema) {
+        public Object evaluate(Tuple row, Schema schema) {
             return value;
         }
 
@@ -92,7 +91,7 @@ public interface Expression {
         }
 
         @Override
-        public Object evaluate(Map<Schema.Column, Object> row, Schema schema) {
+        public Object evaluate(Tuple row, Schema schema) {
             Object leftVal = left.evaluate(row, schema);
             Object rightVal = right.evaluate(row, schema);
 
@@ -131,10 +130,16 @@ public interface Expression {
 
         public static int compare(Object left, Object right) {
             if (left instanceof Comparable<?> compA &&
-                    right != null &&
-                    left.getClass() == right.getClass()) {
-
-                return compareSameType(compA, right);
+                    right != null) {
+                if (left instanceof Number && right instanceof Number) {
+                    double l = ((Number) left).doubleValue();
+                    double r = ((Number) right).doubleValue();
+                    return compareSameType(l, r);
+                } else if (left.getClass() == right.getClass()) {
+                    return compareSameType(compA, right);
+                } else {
+                    throw new IllegalArgumentException("Cannot compare: " + left + " and " + right);
+                }
             }
             throw new IllegalArgumentException("Cannot compare: " + left + " and " + right);
         }
