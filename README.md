@@ -937,7 +937,3 @@ These runs automatically when you build with Maven without skipping tests,
 | `org/query/optimizer/executor/Executor.java`               | Execution engine                                 | ~150 |
 | `org/query/optimizer/PhysicalExecutionDemo.java`           | Complete demonstrations                          | ~250 |
 | `org/query/optimizer/PhysicalExectionTest.java`            | Automated tests                                  | ~200 |
-
-## What's Next?
-
-**Milestone 4** will add Physical Execution
