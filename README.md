@@ -521,7 +521,182 @@ mvn clean
 install
 ```
 
-### Run Demos
+## Milestone 4: Physical Execution
+
+### Overview
+
+Milestone 4 implements the **physical execution layer** that brings query plans to life. This completes the query
+optimizer by adding the ability to actually execute queries and return results.
+
+### Physical Operators
+
+Complete implementation of the **Volcano iterator model**:
+
+1. **PhysicalScan** - Sequential table scan
+2. **PhysicalFilter** - Predicate evaluation
+3. **PhysicalProject** - Column selection
+4. **PhysicalNestedLoopJoin** - Nested loop join algorithm
+5. **PhysicalHashJoin** - Hash join algorithm
+
+All operators implement the `Iterator` interface:
+
+```java
+interface Iterator {
+    void open();      // Initialize
+
+    Object[] next();  // Get next tuple
+
+    void close();     // Clean up
+}
+```
+
+### Execution Engine
+
+**Executor** - Runs physical plans and returns results
+
+```java
+Executor executor = new Executor();
+ExecutionResult result = executor.execute(physicalPlan);
+
+// Access results
+List<Object[]> tuples = result.getTuples();
+long timeMs = result.getExecutionTimeMs();
+```
+
+### Physical Plan Builder
+
+**PhysicalPlanBuilder** - Converts logical to physical plans
+
+- Chooses join algorithms (hash vs nested loop)
+- Propagates schemas through operators
+- Maintains cost annotations
+
+### The Volcano Iterator Model
+
+### Concept
+
+Each operator is an **iterator** that:
+
+1. **Opens** - Initializes state, opens children
+2. **Next** - Returns one tuple at a time
+3. **Closes** - Releases resources
+
+### Example: Filter Operator
+
+```java
+class PhysicalFilter implements Iterator {
+    private Iterator child;
+    private Expression predicate;
+
+    void open() {
+        child.open();  // Open child first
+    }
+
+    Object[] next() {
+        while (true) {
+            Object[] tuple = child.next();
+            if (tuple == null) return null;
+
+            if (predicate.evaluate(tuple)) {
+                return tuple;  // Passes filter
+            }
+            // Otherwise try next tuple
+        }
+    }
+
+    void close() {
+        child.close();
+    }
+}
+```
+
+### Pipeline Execution
+
+Operators **compose** naturally:
+
+```
+Project.next()
+  → calls Filter.next()
+    → calls Scan.next()
+      → returns tuple
+    → evaluates predicate
+  → evaluates projection
+→ returns projected tuple
+```
+
+## Physical Plan Builder
+
+### Logical to Physical Conversion
+
+```java
+PhysicalPlanBuilder builder = new PhysicalPlanBuilder(catalog);
+PhysicalNode physical = builder.build(logicalPlan);
+```
+
+**Conversion rules:**
+
+- `LogicalScan` → `PhysicalScan`
+- `LogicalFilter` → `PhysicalFilter`
+- `LogicalProject` → `PhysicalProject`
+- `LogicalJoin` → `PhysicalHashJoin` (if equi-join) or `PhysicalNestedLoopJoin`
+
+**Schema propagation:**
+
+- Tracks schema through operator tree
+- Needed for expression evaluation
+- Ensures type safety
+
+### Join Algorithm Selection
+
+```java
+private PhysicalNode convertJoin(LogicalJoin join) {
+    if (preferHashJoin && isEquiJoin(join.getCondition())) {
+        return new PhysicalHashJoin(...);
+    } else {
+        return new PhysicalNestedLoopJoin(...);
+    }
+}
+```
+
+## Execution Engine
+
+### Executor Class
+
+```java
+class Executor {
+    ExecutionResult execute(PhysicalNode plan) {
+        Iterator iter = (Iterator) plan;
+        List<Object[]> results = new ArrayList<>();
+
+        long start = System.currentTimeMillis();
+
+        iter.open();
+        Object[] tuple;
+        while ((tuple = iter.next()) != null) {
+            results.add(tuple);
+        }
+        iter.close();
+
+        long time = System.currentTimeMillis() - start;
+
+        return new ExecutionResult(results, time);
+    }
+}
+```
+
+### Execution Result
+
+```java
+class ExecutionResult {
+    List<Object[]> tuples;        // Result data
+    long executionTimeMs;          // How long it took
+    long tuplesProcessed;          // Tuples examined
+
+    int getResultCount();          // Rows returned
+}
+```
+
+## Demos
 
 ### Run the **FoundationDemo** class to see the Milestone 1 features in action.
 
@@ -670,6 +845,46 @@ Project[name, total] [rows=2, cost=1.85]
 2. **Cost Reduction**: Intermediate result size reduced from 80 to 12 rows
 3. **Improvement**: ~45% cost reduction
 
+### Run **DPJoinOrderingDemo** to see the Dynamic Programming based join-ordering optimizations in action.
+
+**Output includes:**
+
+1. 3-table join optimization with before/after comparison
+2. 4-table join optimization
+3. Algorithm statistics (memo cache size)
+4. Scalability analysis (2-6 tables)
+
+### Run **HistogramDemo** to see the histogram-based optimizations in action.
+
+**Output includes:**
+
+1. Histogram structure visualization
+2. Equality predicate estimates
+3. Range predicate estimates (>, <, BETWEEN)
+4. Comparison with NDV-only estimates
+5. Impact on query cost
+
+### Run **CostCalibrationDemo** to see the cost calibration optimizations in action.
+
+**Output includes:**
+
+1. System information (CPU, RAM, Java version)
+2. Calibration progress (each benchmark)
+3. Default vs calibrated cost comparison
+4. Impact on query cost estimates
+5. Realistic time estimates for queries
+6. Save/load demonstration
+
+### Run the **PhysicalExecutionDemo** class to see the Milestone 4 features in action.
+
+**Output shows:**
+
+1. Simple scan execution
+2. Filter execution
+3. Join execution
+4. Join algorithm comparison
+5. Complete pipeline (parse → optimize → execute)
+
 ## Run Tests
 
 These runs automatically when you build with Maven without skipping tests,
@@ -680,39 +895,48 @@ These runs automatically when you build with Maven without skipping tests,
 
 ## File Reference
 
-| File                                                      | Purpose                                          |
-|-----------------------------------------------------------|--------------------------------------------------|
-| `org/query/optimizer/catalog/DataType.java`               | Supported data types (INTEGER, FLOAT, VARCHAR)   |
-| `org/query/optimizer/catalog/Schema.java`                 | Table schema with column definitions             |
-| `org/query/optimizer/catalog/ColumnStats.java`            | Simple column statistics (NDV, min/max, nulls)   |
-| `org/query/optimizer/catalog/TableMetadata.java`          | Table metadata including schema, stats, and data |
-| `org/query/optimizer/catalog/Catalog.java`                | Central metadata registry with CSV loading       |
-| `org/query/optimizer/logical/LogicalNode.java`            | Base class for logical plan nodes                |
-| `org/query/optimizer/logical/Expression.java`             | Expression trees (columns, literals, binary ops) |
-| `org/query/optimizer/physical/PhysicalNode.java`          | Base class for physical plan nodes               |
-| `org/query/optimizer/optimizer/Rule.java`                 | Interface for optimization rules                 |
-| `org/query/optimizer/optimizer/CostModel.java`            | Interface for cost estimation with config        |
-| `org/query/optimizer/executor/Iterator.java`              | Volcano-model execution interface                |
-| `org/query/optimizer/FoundationDemo.java`                 | Demonstrates all Milestone 1 features            |
-| `org/query/optimizer/FoundationTest.java`                 | End-to-end tests for Milestone 1                 |
-| `org/query/optimizer/parser/AST.java`                     | Complete AST node hierarchy                      |
-| `org/query/optimizer/parser/SQLParser.java`               | Hand-written SQL parser                          |
-| `org/query/optimizer/parser/LogicalPlanBuilder.java`      | AST → Logical plan visitor                       |
-| `org/query/optimizer/logical/LogicalScan.java`            | Table scan operator                              |
-| `org/query/optimizer/logical/LogicalFilter.java`          | Filter/selection operator                        |
-| `org/query/optimizer/logical/LogicalProject.java`         | Projection operator                              |
-| `org/query/optimizer/logical/LogicalJoin.java`            | Join operator                                    |
-| `org/query/optimizer/logical/LogicalAggregate.java`       | Aggregation operator                             |
-| `org/query/optimizer/ParsingAndLogicalPlansDemo.java`     | Demonstrates all Milestone 2 features            |
-| `org/query/optimizer/ParsingAndLogicalPlansTest.java`     | End-to-end tests for Milestone 2                 |
-| `org/query/optimizer/RuleEngine.java`                     | Fixpoint iteration engine                        |
-| `org/query/optimizer/rules/PredicatePushdown.java`        | Push filters below joins                         |
-| `org/query/optimizer/rules/ProjectionPushdown.java`       | Push projections below filters                   |
-| `org/query/optimizer/rules/FilterMerge.java`              | Merge consecutive filters                        |
-| `org/query/optimizer/SimpleCostModel.java`                | Cost estimation implementation                   |
-| `org/query/optimizer/CardinalityEstimator.java`           | Row count estimation                             |
-| `org/query/optimizer/RuleEngineAndOptimizationsDemo.java` | Demonstrates all Milestone 3 features            |
-| `org/query/optimizer/RuleEngineAndOptimizationsTest.java` | End-to-end tests for Milestone 3                 |
+| File                                                       | Purpose                                          |
+|------------------------------------------------------------|--------------------------------------------------|
+| `org/query/optimizer/catalog/DataType.java`                | Supported data types (INTEGER, FLOAT, VARCHAR)   |
+| `org/query/optimizer/catalog/Schema.java`                  | Table schema with column definitions             |
+| `org/query/optimizer/catalog/ColumnStats.java`             | Simple column statistics (NDV, min/max, nulls)   |
+| `org/query/optimizer/catalog/TableMetadata.java`           | Table metadata including schema, stats, and data |
+| `org/query/optimizer/catalog/Catalog.java`                 | Central metadata registry with CSV loading       |
+| `org/query/optimizer/logical/LogicalNode.java`             | Base class for logical plan nodes                |
+| `org/query/optimizer/logical/Expression.java`              | Expression trees (columns, literals, binary ops) |
+| `org/query/optimizer/physical/PhysicalNode.java`           | Base class for physical plan nodes               |
+| `org/query/optimizer/optimizer/Rule.java`                  | Interface for optimization rules                 |
+| `org/query/optimizer/optimizer/CostModel.java`             | Interface for cost estimation with config        |
+| `org/query/optimizer/executor/Iterator.java`               | Volcano-model execution interface                |
+| `org/query/optimizer/FoundationDemo.java`                  | Demonstrates all Milestone 1 features            |
+| `org/query/optimizer/FoundationTest.java`                  | End-to-end tests for Milestone 1                 |
+| `org/query/optimizer/parser/AST.java`                      | Complete AST node hierarchy                      |
+| `org/query/optimizer/parser/SQLParser.java`                | Hand-written SQL parser                          |
+| `org/query/optimizer/parser/LogicalPlanBuilder.java`       | AST → Logical plan visitor                       |
+| `org/query/optimizer/logical/LogicalScan.java`             | Table scan operator                              |
+| `org/query/optimizer/logical/LogicalFilter.java`           | Filter/selection operator                        |
+| `org/query/optimizer/logical/LogicalProject.java`          | Projection operator                              |
+| `org/query/optimizer/logical/LogicalJoin.java`             | Join operator                                    |
+| `org/query/optimizer/logical/LogicalAggregate.java`        | Aggregation operator                             |
+| `org/query/optimizer/ParsingAndLogicalPlansDemo.java`      | Demonstrates all Milestone 2 features            |
+| `org/query/optimizer/ParsingAndLogicalPlansTest.java`      | End-to-end tests for Milestone 2                 |
+| `org/query/optimizer/RuleEngine.java`                      | Fixpoint iteration engine                        |
+| `org/query/optimizer/rules/PredicatePushdown.java`         | Push filters below joins                         |
+| `org/query/optimizer/rules/ProjectionPushdown.java`        | Push projections below filters                   |
+| `org/query/optimizer/rules/FilterMerge.java`               | Merge consecutive filters                        |
+| `org/query/optimizer/SimpleCostModel.java`                 | Cost estimation implementation                   |
+| `org/query/optimizer/CardinalityEstimator.java`            | Row count estimation                             |
+| `org/query/optimizer/RuleEngineAndOptimizationsDemo.java`  | Demonstrates all Milestone 3 features            |
+| `org/query/optimizer/RuleEngineAndOptimizationsTest.java`  | End-to-end tests for Milestone 3                 |
+| `org/query/optimizer/physical/PhysicalScan.java`           | Table scan operator                              | ~100 |
+| `org/query/optimizer/physical/PhysicalFilter.java`         | Filter operator                                  | ~120 |
+| `org/query/optimizer/physical/PhysicalProject.java`        | Project operator                                 | ~110 |
+| `org/query/optimizer/physical/PhysicalNestedLoopJoin.java` | Nested loop join                                 | ~180 |
+| `org/query/optimizer/physical/PhysicalHashJoin.java`       | Hash join                                        | ~220 |
+| `org/query/optimizer/physical/PhysicalPlanBuilder.java`    | Logical→Physical conversion                      | ~200 |
+| `org/query/optimizer/executor/Executor.java`               | Execution engine                                 | ~150 |
+| `org/query/optimizer/PhysicalExecutionDemo.java`           | Complete demonstrations                          | ~250 |
+| `org/query/optimizer/PhysicalExectionTest.java`            | Automated tests                                  | ~200 |
 
 ## What's Next?
 
