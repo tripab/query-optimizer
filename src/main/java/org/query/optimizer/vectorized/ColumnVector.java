@@ -252,6 +252,56 @@ public class ColumnVector {
     }
 
     // -------------------------------------------------------------------------
+    // Bulk slice copy (used by VectorizedScan)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Copies {@code length} values starting at {@code srcOffset} from {@code src}
+     * into this vector starting at index 0, including null flags and null count.
+     *
+     * <p>This is the only path that performs a bulk copy of raw array data while
+     * keeping {@link #nullCount} consistent, because it owns the null-flags array
+     * and can recount after the copy without a second pass through the caller.
+     *
+     * <p>Package-private: intended for use by {@code VectorizedScan} only.
+     *
+     * @param src       source vector; must have the same {@link DataType} as this vector
+     * @param srcOffset first row index to copy from {@code src}
+     * @param length    number of rows to copy
+     * @throws IllegalArgumentException if types differ or bounds are violated
+     */
+    void loadSlice(ColumnVector src, int srcOffset, int length) {
+        if (src.type != this.type) {
+            throw new IllegalArgumentException(
+                    "Type mismatch: src=" + src.type + ", dst=" + this.type);
+        }
+        if (srcOffset < 0 || length < 0 || srcOffset + length > src.capacity) {
+            throw new IllegalArgumentException(
+                    "Invalid slice: srcOffset=" + srcOffset + ", length=" + length +
+                    ", srcCapacity=" + src.capacity);
+        }
+        if (length > this.capacity) {
+            throw new IllegalArgumentException(
+                    "Slice length " + length + " exceeds dst capacity " + this.capacity);
+        }
+
+        // Copy typed data
+        switch (type) {
+            case INTEGER -> System.arraycopy(src.intData,    srcOffset, this.intData,    0, length);
+            case FLOAT   -> System.arraycopy(src.floatData,  srcOffset, this.floatData,  0, length);
+            case VARCHAR -> System.arraycopy(src.stringData, srcOffset, this.stringData, 0, length);
+        }
+
+        // Copy null flags and recount
+        System.arraycopy(src.nulls, srcOffset, this.nulls, 0, length);
+        int count = 0;
+        for (int i = 0; i < length; i++) {
+            if (this.nulls[i]) count++;
+        }
+        this.nullCount = count;
+    }
+
+    // -------------------------------------------------------------------------
     // Metadata
     // -------------------------------------------------------------------------
 
