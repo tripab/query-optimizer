@@ -5,6 +5,8 @@ import java.io.FileReader;
 import java.io.IOException;
 import java.util.*;
 
+import org.query.optimizer.vectorized.ColumnarTable;
+
 /**
  * Central catalog managing all table metadata and statistics.
  * This is the single source of truth for schema information.
@@ -12,9 +14,12 @@ import java.util.*;
 public class Catalog {
     private final Map<String, TableMetadata> tables;
 
+    /** Lazily populated columnar views, keyed by lower-cased table name. */
+    private final Map<String, ColumnarTable> columnarTables;
 
     public Catalog() {
-        this.tables = new HashMap<>();
+        this.tables         = new HashMap<>();
+        this.columnarTables = new HashMap<>();
     }
 
     public void registerTable(TableMetadata table) {
@@ -164,6 +169,31 @@ public class Catalog {
 
         // Build histograms for numeric columns
         HistogramBuilder.buildHistograms(table);
+    }
+
+    /**
+     * Returns the columnar (column-major) representation of the named table,
+     * building and caching it on first access.
+     *
+     * <p>The columnar view is derived lazily from the existing row-oriented
+     * {@link TableMetadata} via {@link ColumnarTable#fromTableMetadata}. The
+     * result is cached so subsequent calls are O(1). The underlying
+     * {@code TableMetadata} is not modified.
+     *
+     * <p>This is the entry point for the vectorized execution path:
+     * {@code VectorizedScan} calls this method during {@code open()} to obtain
+     * the columnar table it will scan.
+     *
+     * @param tableName the table name (case-insensitive)
+     * @return the cached or newly created {@link ColumnarTable}
+     * @throws IllegalArgumentException if the table does not exist in the catalog
+     */
+    public ColumnarTable getColumnarTable(String tableName) {
+        String key = tableName.toLowerCase();
+        return columnarTables.computeIfAbsent(key, k -> {
+            TableMetadata meta = getTableMetadata(k);   // throws if not found
+            return ColumnarTable.fromTableMetadata(meta);
+        });
     }
 
     /**
