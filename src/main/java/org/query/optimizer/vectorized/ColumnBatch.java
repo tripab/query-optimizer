@@ -117,6 +117,21 @@ public class ColumnBatch {
     }
 
     /**
+     * Replaces the {@link ColumnVector} at {@code colIndex} with {@code vec}.
+     *
+     * <p>Package-private: intended for use by {@code VectorizedProject} only, which
+     * needs to swap vector references on each {@code next()} call without allocating
+     * a new {@code ColumnBatch}. The caller is responsible for ensuring {@code vec}
+     * is type-compatible with the column at {@code colIndex} in the schema.
+     *
+     * @param colIndex column position (0-based)
+     * @param vec      the replacement vector; must not be null
+     */
+    void setVector(int colIndex, ColumnVector vec) {
+        vectors[colIndex] = vec;
+    }
+
+    /**
      * Returns the ColumnVector for the column with the given name (case-insensitive).
      *
      * @throws IllegalArgumentException if no column with that name exists in the schema
