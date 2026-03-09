@@ -1,7 +1,6 @@
 package org.query.optimizer.physical;
 
 import org.query.optimizer.catalog.Catalog;
-import org.query.optimizer.catalog.DataType;
 import org.query.optimizer.catalog.Schema;
 import org.query.optimizer.catalog.TableMetadata;
 import org.query.optimizer.logical.Expression;
@@ -186,15 +185,16 @@ public class PhysicalPlanBuilder {
                 // Filter doesn't change schema
             }
             case LogicalProject project -> {
-                // Build schema from projection list
+                // Resolve each projected column's type from the child schema so that
+                // downstream operators receive correctly-typed Schema.Column keys.
+                // Previously this hard-coded DataType.VARCHAR, which caused Tuple.find()
+                // to return null for INTEGER/FLOAT columns (Schema.Column is a record and
+                // equality checks both name AND type), making every filter predicate on
+                // non-VARCHAR columns evaluate to false.
+                Schema childSchema = getOutputSchema(project.getChild());
                 List<Schema.Column> columns = new ArrayList<>();
-                for (int i = 0; i < project.getColumnNames().size(); i++) {
-                    // Simplified: assume all projected columns are VARCHAR
-                    // A full implementation would track types through expressions
-                    columns.add(new Schema.Column(
-                            project.getColumnNames().get(i),
-                            DataType.VARCHAR
-                    ));
+                for (String colName : project.getColumnNames()) {
+                    columns.add(childSchema.getColumn(colName));
                 }
                 return new Schema(columns);
             }
