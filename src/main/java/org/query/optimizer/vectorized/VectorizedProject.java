@@ -137,6 +137,12 @@ public class VectorizedProject implements VectorizedOperator {
     // -------------------------------------------------------------------------
 
     @Override
+    public String describe() {
+        return "VectorizedProject[" + String.join(", ", outputColumnNames) + "]\n" +
+               "  +-  " + input.describe().replace("\n", "\n      ");
+    }
+
+    @Override
     public String toString() {
         return "VectorizedProject[" + String.join(", ", outputColumnNames) + "]";
     }

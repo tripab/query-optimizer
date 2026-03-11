@@ -361,6 +361,13 @@ public class VectorizedHashJoin implements VectorizedOperator {
     // -------------------------------------------------------------------------
 
     @Override
+    public String describe() {
+        return "VectorizedHashJoin[" + condition.toSQLString() + "]\n" +
+               "  +-- (probe) " + probeInput.describe().replace("\n", "\n  |           ") + "\n" +
+               "  +-- (build) " + buildInput.describe().replace("\n", "\n              ");
+    }
+
+    @Override
     public String toString() {
         return "VectorizedHashJoin[" + condition.toSQLString() + "]";
     }

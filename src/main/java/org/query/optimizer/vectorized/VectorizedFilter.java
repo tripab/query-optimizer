@@ -115,6 +115,12 @@ public class VectorizedFilter implements VectorizedOperator {
     // -------------------------------------------------------------------------
 
     @Override
+    public String describe() {
+        return "VectorizedFilter[" + predicate.toSQLString() + "]\n" +
+               "  +-  " + input.describe().replace("\n", "\n      ");
+    }
+
+    @Override
     public String toString() {
         return "VectorizedFilter[" + predicate.toSQLString() + "]";
     }

@@ -120,7 +120,12 @@ public class VectorizedScan implements VectorizedOperator {
     // -------------------------------------------------------------------------
 
     @Override
-    public String toString() {
+    public String describe() {
         return "VectorizedScan[" + tableName + "]";
+    }
+
+    @Override
+    public String toString() {
+        return describe();
     }
 }

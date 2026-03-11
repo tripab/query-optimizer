@@ -319,6 +319,21 @@ public class VectorizedAggregate implements VectorizedOperator {
     // -------------------------------------------------------------------------
 
     @Override
+    public String describe() {
+        StringBuilder sb = new StringBuilder("VectorizedAggregate[");
+        if (!groupByColumns.isEmpty()) {
+            sb.append("GROUP BY ").append(String.join(", ", groupByColumns));
+            if (!aggregateOps.isEmpty()) sb.append("; ");
+        }
+        for (int i = 0; i < aggregateOps.size(); i++) {
+            if (i > 0) sb.append(", ");
+            sb.append(aggregateOps.get(i));
+        }
+        sb.append("]\n  +-  ").append(input.describe().replace("\n", "\n      "));
+        return sb.toString();
+    }
+
+    @Override
     public String toString() {
         StringBuilder sb = new StringBuilder("VectorizedAggregate[");
         if (!groupByColumns.isEmpty()) {

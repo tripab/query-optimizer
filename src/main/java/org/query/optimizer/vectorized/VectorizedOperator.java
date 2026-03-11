@@ -86,4 +86,23 @@ public interface VectorizedOperator {
      * @return the schema describing the columns in each output {@link ColumnBatch}
      */
     Schema getOutputSchema();
+
+    /**
+     * Returns a human-readable description of this operator and its children,
+     * indented to reflect the operator tree depth.
+     *
+     * <p>The default implementation returns the simple class name followed by the
+     * output schema column names.  Implementations should override this to include
+     * operator-specific details (table name, predicate, join condition, etc.) and
+     * to recurse into child operators.
+     *
+     * @return a multi-line string suitable for printing to stdout
+     */
+    default String describe() {
+        return getClass().getSimpleName() +
+               "[" + getOutputSchema().getColumns().stream()
+                       .map(Schema.Column::name)
+                       .reduce((a, b) -> a + ", " + b)
+                       .orElse("") + "]";
+    }
 }
