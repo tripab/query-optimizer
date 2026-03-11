@@ -3,7 +3,9 @@ package org.query.optimizer.vectorized;
 import org.query.optimizer.catalog.Catalog;
 import org.query.optimizer.logical.Expression;
 import org.query.optimizer.logical.LogicalNode;
+import org.query.optimizer.parser.LogicalAggregate;
 import org.query.optimizer.parser.LogicalFilter;
+import org.query.optimizer.parser.LogicalJoin;
 import org.query.optimizer.parser.LogicalProject;
 import org.query.optimizer.parser.LogicalScan;
 
@@ -18,13 +20,14 @@ import java.util.List;
  * which is what makes side-by-side Volcano vs. vectorized comparison possible: one logical plan,
  * two physical realisations.
  *
- * <h2>Supported operators (Phase 2)</h2>
+ * <h2>Supported operators</h2>
  * <ul>
- *   <li>{@link LogicalScan}    → {@link VectorizedScan}</li>
- *   <li>{@link LogicalFilter}  → {@link VectorizedFilter}</li>
- *   <li>{@link LogicalProject} → {@link VectorizedProject}</li>
+ *   <li>{@link LogicalScan}      → {@link VectorizedScan}</li>
+ *   <li>{@link LogicalFilter}    → {@link VectorizedFilter}</li>
+ *   <li>{@link LogicalProject}   → {@link VectorizedProject}</li>
+ *   <li>{@link LogicalJoin}      → {@link VectorizedHashJoin} (inner equi-join only)</li>
+ *   <li>{@link LogicalAggregate} → {@link VectorizedAggregate}</li>
  * </ul>
- * Join and aggregate support will be added in Phase 3 (tasks 3.1–3.2).
  */
 public class VectorizedPlanBuilder {
 
@@ -43,13 +46,14 @@ public class VectorizedPlanBuilder {
      */
     public VectorizedOperator build(LogicalNode logicalPlan) {
         return switch (logicalPlan) {
-            case LogicalScan    scan    -> buildScan(scan);
-            case LogicalFilter  filter  -> buildFilter(filter);
-            case LogicalProject project -> buildProject(project);
+            case LogicalScan      scan  -> buildScan(scan);
+            case LogicalFilter    f     -> buildFilter(f);
+            case LogicalProject   p     -> buildProject(p);
+            case LogicalJoin      j     -> buildJoin(j);
+            case LogicalAggregate a     -> buildAggregate(a);
             default -> throw new UnsupportedOperationException(
-                    "VectorizedPlanBuilder (Phase 2) does not yet support: " +
-                    logicalPlan.getClass().getSimpleName() +
-                    ". Join and aggregate support arrives in Phase 3.");
+                    "VectorizedPlanBuilder does not support: " +
+                    logicalPlan.getClass().getSimpleName());
         };
     }
 
@@ -71,5 +75,26 @@ public class VectorizedPlanBuilder {
         VectorizedOperator child       = build(project.getChild());
         List<String>       columnNames = project.getColumnNames();
         return new VectorizedProject(child, columnNames);
+    }
+
+    /**
+     * Converts a {@link LogicalJoin} to a {@link VectorizedHashJoin}.
+     *
+     * <p>The left child becomes the probe side and the right child the build side,
+     * mirroring the convention used by {@link org.query.optimizer.physical.PhysicalHashJoin}.
+     * Only inner equi-joins are supported at this scope.
+     */
+    private VectorizedHashJoin buildJoin(LogicalJoin join) {
+        VectorizedOperator probe = build(join.getLeft());
+        VectorizedOperator build = build(join.getRight());
+        return new VectorizedHashJoin(probe, build, join.getCondition());
+    }
+
+    /**
+     * Converts a {@link LogicalAggregate} to a {@link VectorizedAggregate}.
+     */
+    private VectorizedAggregate buildAggregate(LogicalAggregate agg) {
+        VectorizedOperator child = build(agg.getChild());
+        return new VectorizedAggregate(child, agg.getGroupByColumns(), agg.getAggregateOps());
     }
 }
