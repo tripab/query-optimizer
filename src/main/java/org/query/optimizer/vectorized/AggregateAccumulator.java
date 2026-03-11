@@ -35,10 +35,10 @@ import org.query.optimizer.parser.LogicalAggregate.AggFunction;
  */
 public sealed interface AggregateAccumulator
         permits AggregateAccumulator.CountAccumulator,
-                AggregateAccumulator.SumAccumulator,
-                AggregateAccumulator.AvgAccumulator,
-                AggregateAccumulator.MinAccumulator,
-                AggregateAccumulator.MaxAccumulator {
+        AggregateAccumulator.SumAccumulator,
+        AggregateAccumulator.AvgAccumulator,
+        AggregateAccumulator.MinAccumulator,
+        AggregateAccumulator.MaxAccumulator {
 
     /**
      * Incorporates {@code value} (possibly {@code null}) into the running state.
@@ -54,7 +54,7 @@ public sealed interface AggregateAccumulator
      * FLOAT column).
      *
      * @return the aggregate result; never {@code null} for COUNT, may be
-     *         {@code null} for other functions if no non-null rows were seen
+     * {@code null} for other functions if no non-null rows were seen
      */
     Object result();
 
@@ -76,10 +76,10 @@ public sealed interface AggregateAccumulator
     static AggregateAccumulator create(AggFunction function, DataType columnType) {
         return switch (function) {
             case COUNT -> new CountAccumulator();
-            case SUM   -> new SumAccumulator(columnType);
-            case AVG   -> new AvgAccumulator(columnType);
-            case MIN   -> new MinAccumulator(columnType);
-            case MAX   -> new MaxAccumulator(columnType);
+            case SUM -> new SumAccumulator(columnType);
+            case AVG -> new AvgAccumulator(columnType);
+            case MIN -> new MinAccumulator(columnType);
+            case MAX -> new MaxAccumulator(columnType);
         };
     }
 
@@ -133,7 +133,7 @@ public sealed interface AggregateAccumulator
      */
     final class SumAccumulator implements AggregateAccumulator {
         private final DataType type;
-        private long   intSum   = 0L;
+        private long intSum = 0L;
         private double floatSum = 0.0;
         private boolean hasValue = false;
 
@@ -158,12 +158,20 @@ public sealed interface AggregateAccumulator
         @Override
         public Object result() {
             if (!hasValue) return null;
-            return (type == DataType.INTEGER) ? (int) intSum : (float) floatSum;
+            if (type == DataType.INTEGER) {
+                return (int) intSum;
+            } else {
+                return (float) floatSum;
+            }
         }
 
         @Override
         public String toString() {
-            return "SUM=" + (type == DataType.INTEGER ? intSum : floatSum);
+            if (type == DataType.INTEGER) {
+                return "SUM=" + intSum;
+            } else {
+                return "SUM=" + floatSum;
+            }
         }
     }
 
@@ -183,8 +191,8 @@ public sealed interface AggregateAccumulator
      */
     final class AvgAccumulator implements AggregateAccumulator {
         private final DataType type;
-        private double sum   = 0.0;
-        private int    count = 0;
+        private double sum = 0.0;
+        private int count = 0;
 
         AvgAccumulator(DataType type) {
             if (type == DataType.VARCHAR) {
@@ -252,8 +260,8 @@ public sealed interface AggregateAccumulator
 
         private int compare(Object a, Object b) {
             return switch (type) {
-                case INTEGER -> Integer.compare(((Number) a).intValue(),   ((Number) b).intValue());
-                case FLOAT   -> Float.compare  (((Number) a).floatValue(), ((Number) b).floatValue());
+                case INTEGER -> Integer.compare(((Number) a).intValue(), ((Number) b).intValue());
+                case FLOAT -> Float.compare(((Number) a).floatValue(), ((Number) b).floatValue());
                 case VARCHAR -> ((String) a).compareTo((String) b);
             };
         }
@@ -299,8 +307,8 @@ public sealed interface AggregateAccumulator
 
         private int compare(Object a, Object b) {
             return switch (type) {
-                case INTEGER -> Integer.compare(((Number) a).intValue(),   ((Number) b).intValue());
-                case FLOAT   -> Float.compare  (((Number) a).floatValue(), ((Number) b).floatValue());
+                case INTEGER -> Integer.compare(((Number) a).intValue(), ((Number) b).intValue());
+                case FLOAT -> Float.compare(((Number) a).floatValue(), ((Number) b).floatValue());
                 case VARCHAR -> ((String) a).compareTo((String) b);
             };
         }
