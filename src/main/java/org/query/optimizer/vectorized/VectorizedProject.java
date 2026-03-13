@@ -70,7 +70,13 @@ public class VectorizedProject implements VectorizedOperator {
 
         for (int i = 0; i < outputColumnNames.size(); i++) {
             String colName = outputColumnNames.get(i);
-            int    srcIdx  = inputSchema.getColumnIndex(colName);   // throws if missing
+            // Use first-match linear scan rather than the Schema HashMap lookup.
+            // The HashMap retains only the LAST column for any given name, so after
+            // a join that concatenates two schemas sharing a column name (e.g. both
+            // tables have "id"), HashMap.get("id") resolves to the wrong side.
+            // A linear scan returning the first occurrence mirrors exactly what
+            // Tuple.find() does in the Volcano path, keeping both engines in sync.
+            int srcIdx = findFirstColumn(inputSchema, colName);
             inputColIndices[i] = srcIdx;
             outCols.add(inputSchema.getColumn(srcIdx));
         }
@@ -127,9 +133,44 @@ public class VectorizedProject implements VectorizedOperator {
         Schema inputSchema = input.getOutputSchema();
         List<Schema.Column> outCols = new ArrayList<>(outputColumnNames.size());
         for (String colName : outputColumnNames) {
-            outCols.add(inputSchema.getColumn(colName));
+            outCols.add(inputSchema.getColumn(findFirstColumn(inputSchema, colName)));
         }
         return new Schema(outCols);
+    }
+
+    // -------------------------------------------------------------------------
+    // Column resolution
+    // -------------------------------------------------------------------------
+
+    /**
+     * Returns the index of the <em>first</em> column in {@code schema} whose name
+     * matches {@code colName} (case-insensitive).
+     *
+     * <p>This is intentionally a linear scan rather than a HashMap lookup.
+     * {@link Schema#getColumnIndex} uses a {@code HashMap<String, Integer>} that
+     * retains only the <em>last</em> index for any given name.  After a hash join
+     * that concatenates probe and build schemas, two columns can share the same
+     * bare name (e.g. {@code "id"} from {@code orders} and {@code "id"} from
+     * {@code customers}).  The HashMap would return the build-side index; the
+     * linear scan returns the probe-side index — matching the behaviour of
+     * {@link org.query.optimizer.catalog.Tuple#find}, which also returns the first
+     * attribute whose key equals the requested column.
+     *
+     * @param schema  the schema to search
+     * @param colName the column name to look for (case-insensitive)
+     * @return the index of the first matching column
+     * @throws IllegalArgumentException if no column with that name exists
+     */
+    private static int findFirstColumn(Schema schema, String colName) {
+        String lower = colName.toLowerCase();
+        List<Schema.Column> cols = schema.getColumns();
+        for (int i = 0; i < cols.size(); i++) {
+            if (cols.get(i).name().equalsIgnoreCase(lower)) {
+                return i;
+            }
+        }
+        throw new IllegalArgumentException(
+                "Column not found in schema: " + colName + " (schema: " + schema + ")");
     }
 
     // -------------------------------------------------------------------------
