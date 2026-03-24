@@ -20,7 +20,7 @@ import java.util.List;
  */
 public class PhysicalPlanBuilder {
     private final Catalog catalog;
-    private final boolean preferHashJoin;
+    private boolean preferHashJoin;
 
     public PhysicalPlanBuilder(Catalog catalog) {
         this(catalog, true); // Prefer hash join by default
@@ -28,6 +28,17 @@ public class PhysicalPlanBuilder {
 
     public PhysicalPlanBuilder(Catalog catalog, boolean preferHashJoin) {
         this.catalog = catalog;
+        this.preferHashJoin = preferHashJoin;
+    }
+
+    /**
+     * Sets whether equi-joins should prefer hash join over nested-loop join.
+     * Allows the same builder instance to be reused with different hint sets.
+     *
+     * @param preferHashJoin {@code true} to use hash join for equi-joins (default),
+     *                       {@code false} to force nested-loop join
+     */
+    public void setPreferHashJoin(boolean preferHashJoin) {
         this.preferHashJoin = preferHashJoin;
     }
 
