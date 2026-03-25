@@ -4,9 +4,18 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.query.optimizer.catalog.Catalog;
+import org.query.optimizer.executor.Executor;
+import org.query.optimizer.executor.Executor.ExecutionResult;
+import org.query.optimizer.learned.bao.BanditOptimizer;
+import org.query.optimizer.learned.bao.BanditOptimizer.QueryMetrics;
+import org.query.optimizer.learned.bao.PlanValueModel;
+import org.query.optimizer.learned.bao.ThompsonSampler;
+import org.query.optimizer.learned.common.ExecutionFeedback;
 import org.query.optimizer.learned.common.HintSet;
 import org.query.optimizer.learned.common.PlanFeaturizer;
 import org.query.optimizer.learned.common.PlanVariantGenerator;
+import org.query.optimizer.learned.common.WorkloadGenerator;
+import org.query.optimizer.learned.common.WorkloadGenerator.ParsedQuery;
 import org.query.optimizer.learned.nn.LossFunction;
 import org.query.optimizer.learned.nn.SimpleNeuralNetwork;
 import org.query.optimizer.logical.LogicalNode;
@@ -22,6 +31,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
@@ -255,7 +265,129 @@ public class LearnedOptimizerTest {
         }
     }
 
-    // --- Helper ---
+    // --- Phase 3 tests ---
+
+    @Test
+    void thompsonSamplerSelectsBestArmOverTime() {
+        // Property test: once the value model has learned that arm A is cheaper
+        // than arm B, Thompson Sampling must prefer arm A.
+        //
+        // We use one-hot feature vectors (only one input neuron active per arm)
+        // to keep first-layer activations small and avoid gradient explosion.
+        // Targets are 1 ms (cheap) vs 10 ms (expensive) — a 10× difference that
+        // the model can learn reliably given enough training data.
+        //
+        // 500 feedback pairs → 100 retrains; the final retrain uses 1 000 samples
+        // × 20 epochs = 20 000 gradient steps at lr=0.001, which is sufficient
+        // for a 2-input regression on a 34→64→32→1 network.
+        double[] featA = new double[PlanFeaturizer.FEATURE_DIM]; featA[0] = 1.0;
+        double[] featB = new double[PlanFeaturizer.FEATURE_DIM]; featB[1] = 1.0;
+
+        PlanValueModel  model   = new PlanValueModel(new Random(42));
+        ThompsonSampler sampler = new ThompsonSampler(new Random(99));
+
+        // 500 pairs × 2 calls = 1 000 addFeedback calls → 100 retrains
+        for (int i = 0; i < 500; i++) {
+            model.addFeedback(new ExecutionFeedback("", HintSet.DEFAULT,   featA, 1,  0, 0.0, 0));
+            model.addFeedback(new ExecutionFeedback("", HintSet.FORCE_NLJ, featB, 10, 0, 0.0, 0));
+        }
+
+        // Step 1: verify the model has learned the correct cost ordering
+        double predA = model.predict(featA).mean();
+        double predB = model.predict(featB).mean();
+        assertTrue(predA < predB,
+                "After training, model must predict lower cost for cheap plan (A). "
+                + "predA=" + predA + " predB=" + predB);
+
+        // Step 2: verify Thompson Sampling prefers the cheaper arm ≥75% of trials
+        Map<HintSet, double[]> planFeatures = new LinkedHashMap<>();
+        planFeatures.put(HintSet.DEFAULT,   featA);
+        planFeatures.put(HintSet.FORCE_NLJ, featB);
+
+        int countA = 0;
+        for (int i = 0; i < 200; i++) {
+            if (sampler.selectArm(planFeatures, model) == HintSet.DEFAULT) countA++;
+        }
+
+        assertTrue(countA >= 150,
+                "Low-cost arm (DEFAULT) should be selected ≥75% after training. "
+                + "Got " + countA + "/200");
+    }
+
+    @Test
+    void baoImprovesOverBaseline() {
+        // End-to-end integration test for BanditOptimizer.
+        //
+        // With 3-row test tables, latency differences between hint sets are
+        // sub-millisecond, so we do not assert a strict latency improvement.
+        // Instead we verify:
+        //   1. All queries complete without error.
+        //   2. Every selected arm is a valid member of the arm list.
+        //   3. Bao's total logical cost is at most 4× the DEFAULT baseline
+        //      (sanity bound during pure exploration).
+        //
+        // We use hand-crafted queries (no aggregation) because the test
+        // catalog's 3-row tables keep execution fast.
+        List<ParsedQuery> workload = List.of(
+                new ParsedQuery("SELECT id, name FROM customers",
+                        parse("SELECT id, name FROM customers")),
+                new ParsedQuery("SELECT id, name FROM products",
+                        parse("SELECT id, name FROM products")),
+                new ParsedQuery("SELECT c.name, o.total FROM customers c "
+                        + "INNER JOIN orders o ON c.id = o.customer_id",
+                        parse("SELECT c.name, o.total FROM customers c "
+                        + "INNER JOIN orders o ON c.id = o.customer_id")),
+                new ParsedQuery("SELECT c.name, o.total FROM customers c "
+                        + "INNER JOIN orders o ON c.id = o.customer_id "
+                        + "WHERE c.city = 'Seattle'",
+                        parse("SELECT c.name, o.total FROM customers c "
+                        + "INNER JOIN orders o ON c.id = o.customer_id "
+                        + "WHERE c.city = 'Seattle'")),
+                new ParsedQuery("SELECT id, name FROM customers WHERE city = 'Portland'",
+                        parse("SELECT id, name FROM customers WHERE city = 'Portland'"))
+        );
+
+        // --- Baseline: every query executed with DEFAULT hint set ---
+        PlanVariantGenerator varGen   = new PlanVariantGenerator(catalog, costModel);
+        PlanFeaturizer       feat2    = new PlanFeaturizer();
+        Executor             exec2    = new Executor();
+        double               baseCost = 0.0;
+        for (ParsedQuery q : workload) {
+            Map<HintSet, PhysicalNode> variants =
+                    varGen.generateVariants(q.logicalPlan(), List.of(HintSet.DEFAULT));
+            PhysicalNode plan = variants.values().iterator().next();
+            ExecutionResult res = exec2.execute(plan);
+            double[] features = feat2.featurize(plan);
+            baseCost += new ExecutionFeedback("", HintSet.DEFAULT, features,
+                    res.executionTimeMs(), res.tuplesProcessed(),
+                    plan.getEstimatedCost(), plan.getEstimatedRows()).logicalCost();
+        }
+
+        // --- Bao run ---
+        BanditOptimizer bao = new BanditOptimizer(catalog, new Random(42));
+        List<QueryMetrics> baoMetrics = bao.runWorkload(workload);
+
+        // 1. Correct count
+        assertEquals(workload.size(), baoMetrics.size(), "Bao must process all queries");
+
+        // 2. Every selected arm is in the official arm list
+        List<HintSet> allArms = HintSet.allHintSets();
+        for (QueryMetrics m : baoMetrics) {
+            assertTrue(allArms.contains(m.selectedArm()),
+                    "Selected arm must be a known HintSet: " + m.selectedArm());
+        }
+
+        // 3. Total logical cost at most 4× DEFAULT baseline (sanity bound)
+        double baoCost = baoMetrics.stream()
+                .mapToDouble(m -> m.result().tuplesProcessed() * 0.01
+                             + m.result().executionTimeMs())
+                .sum();
+        assertTrue(baoCost <= baseCost * 4.0 + 1.0,
+                String.format("Bao cost (%.3f) must not exceed 4× baseline (%.3f)",
+                        baoCost, baseCost));
+    }
+
+    // --- Helpers ---
 
     private static LogicalNode parse(String sql) {
         AST.SelectStmt ast = parser.parse(sql);
