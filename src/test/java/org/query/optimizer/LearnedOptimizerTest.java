@@ -7,6 +7,8 @@ import org.query.optimizer.catalog.Catalog;
 import org.query.optimizer.learned.common.HintSet;
 import org.query.optimizer.learned.common.PlanFeaturizer;
 import org.query.optimizer.learned.common.PlanVariantGenerator;
+import org.query.optimizer.learned.nn.LossFunction;
+import org.query.optimizer.learned.nn.SimpleNeuralNetwork;
 import org.query.optimizer.logical.LogicalNode;
 import org.query.optimizer.parser.AST;
 import org.query.optimizer.parser.LogicalPlanBuilder;
@@ -22,6 +24,7 @@ import java.nio.file.Paths;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.Random;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -164,6 +167,92 @@ public class LearnedOptimizerTest {
 
         assertFalse(Arrays.equals(featuresA, featuresB),
                 "Hash join and nested-loop plans must produce different feature vectors");
+    }
+
+    // --- Phase 2 tests ---
+
+    @Test
+    void neuralNetworkLearnsSineFunction() {
+        // Train a small network to approximate sin(x) on [0, π].
+        // After sufficient training the MSE on a held-out test set should be < 0.01.
+        SimpleNeuralNetwork net = new SimpleNeuralNetwork(
+                new int[]{1, 64, 32, 1}, 0.001, new Random(42));
+        LossFunction mse = LossFunction.mse();
+
+        for (int epoch = 0; epoch < 3000; epoch++) {
+            for (int i = 0; i <= 20; i++) {
+                double x = Math.PI * i / 20.0;
+                net.trainStep(new double[]{x}, new double[]{Math.sin(x)}, mse);
+            }
+        }
+
+        // Evaluate on held-out points (midpoints of training intervals)
+        double totalMse = 0.0;
+        int testPoints = 20;
+        for (int i = 0; i < testPoints; i++) {
+            double x = Math.PI * (i + 0.5) / testPoints;
+            double pred = net.predict(new double[]{x})[0];
+            double diff = pred - Math.sin(x);
+            totalMse += diff * diff;
+        }
+        totalMse /= testPoints;
+
+        assertTrue(totalMse < 0.01,
+                "Network should approximate sin(x) with MSE < 0.01, got: " + totalMse);
+    }
+
+    @Test
+    void neuralNetworkLearnsBinaryClassification() {
+        // Train a network to solve XOR: (0,0)→0, (0,1)→1, (1,0)→1, (1,1)→0.
+        // After sufficient training it should classify all four examples correctly.
+        double[][] inputs  = {{0, 0}, {0, 1}, {1, 0}, {1, 1}};
+        double[][] targets = {{0},    {1},    {1},    {0}};
+
+        SimpleNeuralNetwork net = new SimpleNeuralNetwork(
+                new int[]{2, 8, 1}, 0.1, new Random(42));
+        LossFunction mse = LossFunction.mse();
+
+        for (int epoch = 0; epoch < 5000; epoch++) {
+            for (int i = 0; i < inputs.length; i++) {
+                net.trainStep(inputs[i], targets[i], mse);
+            }
+        }
+
+        int correct = 0;
+        for (int i = 0; i < inputs.length; i++) {
+            double pred = net.predict(inputs[i])[0];
+            // threshold at 0.5
+            int predicted = pred >= 0.5 ? 1 : 0;
+            if (predicted == (int) targets[i][0]) correct++;
+        }
+
+        assertEquals(4, correct, "Network must solve XOR — all 4 examples correct");
+    }
+
+    @Test
+    void neuralNetworkSaveAndLoad() throws IOException {
+        SimpleNeuralNetwork original = new SimpleNeuralNetwork(
+                new int[]{4, 8, 2}, 0.01, new Random(7));
+        LossFunction mse = LossFunction.mse();
+
+        // Train briefly so weights are non-trivial
+        for (int i = 0; i < 50; i++) {
+            original.trainStep(new double[]{1, 2, 3, 4}, new double[]{0.5, -0.5}, mse);
+        }
+
+        Path tmp = Files.createTempFile("nn-test-", ".txt");
+        try {
+            original.save(tmp.toString());
+            SimpleNeuralNetwork loaded = SimpleNeuralNetwork.load(tmp.toString());
+
+            double[] predOriginal = original.predict(new double[]{1, 0, -1, 2});
+            double[] predLoaded   = loaded.predict(new double[]{1, 0, -1, 2});
+
+            assertArrayEquals(predOriginal, predLoaded, 1e-10,
+                    "Loaded network must produce identical predictions to the saved one");
+        } finally {
+            Files.deleteIfExists(tmp);
+        }
     }
 
     // --- Helper ---
