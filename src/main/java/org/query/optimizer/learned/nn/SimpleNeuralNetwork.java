@@ -186,6 +186,31 @@ public class SimpleNeuralNetwork {
     // Backpropagation
     // -------------------------------------------------------------------------
 
+    /**
+     * Performs backpropagation from an external gradient and returns the gradient
+     * at the network input.
+     *
+     * <p>This is required by composite architectures such as
+     * {@link org.query.optimizer.learned.lero.PairwiseComparator} where the
+     * gradient must flow through multiple networks (classifier → shared encoder).
+     *
+     * @param fwd        the cached forward pass result from {@link #forward}
+     * @param outputGrad gradient of the loss w.r.t. this network's output
+     * @return gradient of the loss w.r.t. this network's input
+     */
+    public double[] backpropReturnInputGrad(ForwardResult fwd, double[] outputGrad) {
+        double[] delta = outputGrad;
+        for (int i = weights.length - 1; i >= 0; i--) {
+            if (i < weights.length - 1) {
+                double[] rd = ActivationFunction.reluDerivative(fwd.activations()[i + 1]);
+                delta = elementwiseMultiply(delta, rd);
+            }
+            updateWeights(i, delta, fwd.activations()[i]);
+            delta = matTVecMultiply(weights[i], delta, layerSizes[i], layerSizes[i + 1]);
+        }
+        return delta;
+    }
+
     private void backprop(double[][] activations, double[] outputGrad) {
         double[] delta = outputGrad;
 
