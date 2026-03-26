@@ -885,6 +885,202 @@ Project[name, total] [rows=2, cost=1.85]
 4. Join algorithm comparison
 5. Complete pipeline (parse → optimize → execute)
 
+## AI-Powered Plan Selection
+
+The optimizer includes two learned plan selection strategies that sit on top of the
+existing optimizer pipeline rather than replacing it. Both generate alternative physical
+plans for a query (using different "hint sets"), featurize them into numeric vectors,
+and use a trained model to pick the best one.
+
+### Shared Infrastructure
+
+#### HintSet
+
+An immutable configuration that controls which optimization rules are applied and
+whether the physical plan builder prefers hash joins or nested-loop joins.
+
+```java
+// Five predefined hint sets (the "arms" in Bao's bandit terminology)
+HintSet.DEFAULT           // all rules, hash join preferred
+HintSet.FORCE_NLJ         // all rules, nested-loop join forced
+HintSet.NO_PUSHDOWN       // skip predicate/projection pushdown
+HintSet.NO_PUSHDOWN_NLJ   // skip pushdown, force NLJ
+HintSet.MINIMAL_OPT       // no optimization rules at all
+
+List<HintSet> arms = HintSet.allHintSets(); // all five
+```
+
+#### PlanVariantGenerator
+
+Generates one physical plan per hint set for a given logical plan, deduplicating
+structurally identical plans before returning.
+
+```java
+PlanVariantGenerator gen = new PlanVariantGenerator(catalog, costModel);
+Map<HintSet, PhysicalNode> variants = gen.generateVariants(logicalPlan, HintSet.allHintSets());
+// A join query typically yields 2–4 distinct physical plans
+```
+
+#### PlanFeaturizer
+
+Converts a physical plan tree into a fixed-length 34-element `double[]` suitable
+for neural network input. Uses BFS traversal across up to 5 operator slots (6
+features each) plus 4 global features (depth, total cost, total rows, operator count).
+
+```java
+double[] features = new PlanFeaturizer().featurize(physicalNode);
+// features.length == PlanFeaturizer.FEATURE_DIM (34)
+```
+
+#### WorkloadGenerator / DataGenerator
+
+`WorkloadGenerator` generates random SQL queries across five shapes (simple scan,
+filtered scan, 2-way join, 3-way join, join + aggregation). `DataGenerator` populates
+a catalog with synthetic `customers`, `orders`, and `products` tables at configurable
+scale.
+
+```java
+DataGenerator.generate(catalog, 10);   // ~10K rows per table
+WorkloadGenerator wl = new WorkloadGenerator(catalog);
+List<ParsedQuery> queries = wl.generateWorkload(200);
+```
+
+---
+
+### Hand-Rolled Neural Network
+
+A minimal feedforward MLP with backpropagation, used by both Bao and Lero.
+
+#### SimpleNeuralNetwork
+
+Configurable layer sizes, Xavier uniform weight initialization, ReLU hidden layers,
+linear output, and online SGD. Supports save/load to plain-text files.
+
+```java
+SimpleNeuralNetwork net = new SimpleNeuralNetwork(new int[]{34, 64, 32, 1}, 0.001);
+
+// Train on (features, target) pairs
+net.trainStep(planFeatures, new double[]{observedLatency}, LossFunction.mse());
+
+// Predict
+double predicted = net.predict(planFeatures)[0];
+
+// Save / load
+net.save("model.txt");
+SimpleNeuralNetwork loaded = SimpleNeuralNetwork.load("model.txt");
+```
+
+#### LossFunction / ActivationFunction
+
+`LossFunction` provides `mse()` (for latency regression) and `bce()` (for pairwise
+classification). `ActivationFunction` provides `relu`, `reluDerivative`, `sigmoid`,
+and `sigmoidDerivative` as static methods.
+
+---
+
+### Bao: Bandit-Based Plan Steering
+
+Bao treats each hint set as a bandit "arm" and uses Thompson Sampling over an
+ensemble of neural networks to select the arm expected to produce the fastest plan.
+After executing the chosen plan, the observed latency is fed back to improve the model.
+
+#### PlanValueModel
+
+An ensemble of three neural networks that predicts both mean and variance of latency
+for a plan. Retrains periodically on a growing replay buffer, with each ensemble
+member trained on a different bootstrap sample.
+
+```java
+PlanValueModel model = new PlanValueModel(new Random(42));
+
+// Add observed execution feedback
+model.addFeedback(new ExecutionFeedback(sql, hintSet, features, latencyMs, tuples, ...));
+
+// Predict latency with uncertainty
+PredictionWithUncertainty p = model.predict(planFeatures);
+// p.mean() and p.variance()
+```
+
+#### ThompsonSampler
+
+Draws from the `N(mean, variance)` posterior for each plan and returns the arm
+with the lowest sampled predicted latency.
+
+#### BanditOptimizer
+
+Orchestrates the full Bao loop: generate variants → featurize → Thompson sample →
+execute → record feedback.
+
+```java
+BanditOptimizer bao = new BanditOptimizer(catalog);
+ExecutionResult result = bao.optimizeAndExecute(logicalPlan);
+
+// Run an entire workload and collect per-query metrics
+List<BanditOptimizer.QueryMetrics> metrics = bao.runWorkload(workload);
+```
+
+#### BaoDemo
+
+Runs a 200-query demo showing the learning curve (cumulative latency over time),
+arm selection histogram, per-query latency breakdown, and Bao vs. default comparison.
+
+---
+
+### Lero: Learning-to-Rank Plan Selection
+
+Lero avoids predicting absolute latency. Instead, it trains a pairwise comparator
+that learns to say "plan A is faster than plan B" — a strictly easier learning task.
+
+#### PairwiseComparator
+
+A Siamese neural network: both plans are encoded by the same shared encoder
+(`34 → 64 → 32`), the resulting embeddings are concatenated with their difference
+(`96`-dim), and a classifier (`96 → 32 → 1`) outputs P(plan A is faster than plan B).
+
+```java
+PairwiseComparator comparator = new PairwiseComparator();
+
+// Train on a labeled pair
+double loss = comparator.trainStep(featuresA, featuresB, /* aIsFaster= */ true);
+
+// Compare two plans
+double prob = comparator.compare(featuresA, featuresB);  // > 0.5 → A predicted faster
+
+// Pick the best plan from a set via round-robin tournament
+int bestIdx = comparator.tournamentSelect(List.of(feat0, feat1, feat2, feat3));
+
+// Evaluate on held-out pairs
+double accuracy = comparator.evaluateAccuracy(testPairs);
+```
+
+#### PlanExplorer
+
+Generates training data by executing all plan variants for a query and recording
+every pairwise comparison. Produces both directions of each pair for balanced training.
+
+#### LeroOptimizer
+
+During a warm-up period it uses the cost model and runs the `PlanExplorer` to
+accumulate training pairs. Once warm-up is complete, it uses `tournamentSelect`
+for plan selection and re-explores on 10% of queries for continued learning.
+
+```java
+LeroOptimizer lero = new LeroOptimizer(catalog);
+ExecutionResult result = lero.optimizeAndExecute(logicalPlan);
+
+// Run a full workload
+List<LeroOptimizer.QueryMetrics> metrics = lero.runWorkload(workload);
+// QueryMetrics includes: result, selectedPlan, usedCostModel flag
+```
+
+#### LeroDemo
+
+Runs a 200-query demo with five output sections: overall summary, learning curve at
+query checkpoints, pairwise comparator accuracy over time, Lero vs. cost-model
+disagreement analysis, and warm-up vs. warm-phase statistics.
+
+---
+
 ## Run Tests
 
 These runs automatically when you build with Maven without skipping tests,
@@ -892,6 +1088,7 @@ These runs automatically when you build with Maven without skipping tests,
 - FoundationTest contains end-to-end tests for Milestone 1 features
 - ParsingAndLogicalPlansTest contains end-to-end tests for Milestone 2 features
 - RuleEngineAndOptimizationsTest contains end-to-end tests for Milestone 3 features
+- LearnedOptimizerTest contains end-to-end tests for the AI plan selection features
 
 ## File Reference
 
@@ -928,12 +1125,30 @@ These runs automatically when you build with Maven without skipping tests,
 | `org/query/optimizer/CardinalityEstimator.java`            | Row count estimation                             |
 | `org/query/optimizer/RuleEngineAndOptimizationsDemo.java`  | Demonstrates all Milestone 3 features            |
 | `org/query/optimizer/RuleEngineAndOptimizationsTest.java`  | End-to-end tests for Milestone 3                 |
-| `org/query/optimizer/physical/PhysicalScan.java`           | Table scan operator                              | ~100 |
-| `org/query/optimizer/physical/PhysicalFilter.java`         | Filter operator                                  | ~120 |
-| `org/query/optimizer/physical/PhysicalProject.java`        | Project operator                                 | ~110 |
-| `org/query/optimizer/physical/PhysicalNestedLoopJoin.java` | Nested loop join                                 | ~180 |
-| `org/query/optimizer/physical/PhysicalHashJoin.java`       | Hash join                                        | ~220 |
-| `org/query/optimizer/physical/PhysicalPlanBuilder.java`    | Logical→Physical conversion                      | ~200 |
-| `org/query/optimizer/executor/Executor.java`               | Execution engine                                 | ~150 |
-| `org/query/optimizer/PhysicalExecutionDemo.java`           | Complete demonstrations                          | ~250 |
-| `org/query/optimizer/PhysicalExectionTest.java`            | Automated tests                                  | ~200 |
+| `org/query/optimizer/physical/PhysicalScan.java`                         | Table scan operator                                  |
+| `org/query/optimizer/physical/PhysicalFilter.java`                       | Filter operator                                      |
+| `org/query/optimizer/physical/PhysicalProject.java`                      | Project operator                                     |
+| `org/query/optimizer/physical/PhysicalNestedLoopJoin.java`               | Nested loop join                                     |
+| `org/query/optimizer/physical/PhysicalHashJoin.java`                     | Hash join                                            |
+| `org/query/optimizer/physical/PhysicalPlanBuilder.java`                  | Logical→Physical conversion (configurable join pref) |
+| `org/query/optimizer/executor/Executor.java`                             | Execution engine                                     |
+| `org/query/optimizer/PhysicalExecutionDemo.java`                         | Complete demonstrations                              |
+| `org/query/optimizer/PhysicalExecutionTest.java`                         | Automated tests                                      |
+| `org/query/optimizer/learned/common/HintSet.java`                        | Immutable optimizer configuration with 5 presets     |
+| `org/query/optimizer/learned/common/PlanVariantGenerator.java`           | Generate + deduplicate physical plan variants        |
+| `org/query/optimizer/learned/common/PlanFeaturizer.java`                 | Convert plan tree to 34-dim feature vector           |
+| `org/query/optimizer/learned/common/ExecutionFeedback.java`              | Training signal record with logicalCost()            |
+| `org/query/optimizer/learned/common/WorkloadGenerator.java`              | Random SQL workload generator (5 query shapes)       |
+| `org/query/optimizer/learned/common/DataGenerator.java`                  | Synthetic table generator (customers/orders/products)|
+| `org/query/optimizer/learned/nn/ActivationFunction.java`                 | ReLU and sigmoid with derivatives                    |
+| `org/query/optimizer/learned/nn/LossFunction.java`                       | MSE and BCE loss functions                           |
+| `org/query/optimizer/learned/nn/SimpleNeuralNetwork.java`                | Feedforward MLP with online SGD and save/load        |
+| `org/query/optimizer/learned/bao/PlanValueModel.java`                    | Ensemble latency predictor with uncertainty          |
+| `org/query/optimizer/learned/bao/ThompsonSampler.java`                   | Thompson Sampling over plan ensemble                 |
+| `org/query/optimizer/learned/bao/BanditOptimizer.java`                   | Bao end-to-end optimizer loop                        |
+| `org/query/optimizer/learned/bao/BaoDemo.java`                           | Bao demonstration with learning curve output         |
+| `org/query/optimizer/learned/lero/PairwiseComparator.java`               | Siamese network for plan ranking                     |
+| `org/query/optimizer/learned/lero/PlanExplorer.java`                     | Execute all variants and generate training pairs     |
+| `org/query/optimizer/learned/lero/LeroOptimizer.java`                    | Lero end-to-end optimizer with warm-up/warm phases   |
+| `org/query/optimizer/learned/lero/LeroDemo.java`                         | Lero demonstration with accuracy and ranking output  |
+| `org/query/optimizer/LearnedOptimizerTest.java`                          | Tests for all AI plan selection components           |
