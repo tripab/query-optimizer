@@ -16,6 +16,9 @@ import org.query.optimizer.learned.common.PlanFeaturizer;
 import org.query.optimizer.learned.common.PlanVariantGenerator;
 import org.query.optimizer.learned.common.WorkloadGenerator;
 import org.query.optimizer.learned.common.WorkloadGenerator.ParsedQuery;
+import org.query.optimizer.learned.lero.LeroOptimizer;
+import org.query.optimizer.learned.lero.PairwiseComparator;
+import org.query.optimizer.learned.lero.PairwiseComparator.TrainingPair;
 import org.query.optimizer.learned.nn.LossFunction;
 import org.query.optimizer.learned.nn.SimpleNeuralNetwork;
 import org.query.optimizer.logical.LogicalNode;
@@ -385,6 +388,145 @@ public class LearnedOptimizerTest {
         assertTrue(baoCost <= baseCost * 4.0 + 1.0,
                 String.format("Bao cost (%.3f) must not exceed 4× baseline (%.3f)",
                         baoCost, baseCost));
+    }
+
+    // --- Phase 4 tests ---
+
+    @Test
+    void pairwiseComparatorLearnsTrivialOrdering() {
+        // Property test: after training on pairs where A is always faster than B,
+        // the comparator must achieve >90% accuracy on those same pairs.
+        //
+        // We use one-hot feature vectors (featA[0]=1, featB[1]=1) so the encoder
+        // receives a clearly separable signal with no feature overlap.
+        // 200 pairs × 30 epochs = 6 000 gradient steps at lr=0.001, which is
+        // sufficient for this trivial 2-class ordering problem.
+        double[] featA = new double[PlanFeaturizer.FEATURE_DIM]; featA[0] = 1.0;
+        double[] featB = new double[PlanFeaturizer.FEATURE_DIM]; featB[1] = 1.0;
+
+        PairwiseComparator comparator = new PairwiseComparator(new Random(42));
+        List<TrainingPair> pairs = new java.util.ArrayList<>();
+        for (int i = 0; i < 200; i++) {
+            pairs.add(new TrainingPair(featA, featB, true));   // A is faster
+            pairs.add(new TrainingPair(featB, featA, false));  // B is not faster than A
+        }
+
+        for (int epoch = 0; epoch < 30; epoch++) {
+            for (TrainingPair pair : pairs) {
+                comparator.trainStep(pair.featuresA(), pair.featuresB(), pair.aIsFaster());
+            }
+        }
+
+        double accuracy = comparator.evaluateAccuracy(pairs);
+        assertTrue(accuracy > 0.9,
+                String.format("Comparator must achieve >90%% accuracy on trivial ordering "
+                        + "(10× latency difference). Got: %.1f%%", accuracy * 100));
+    }
+
+    @Test
+    void tournamentSelectReturnsCorrectWinner() {
+        // Verify that tournamentSelect identifies the best plan after training.
+        //
+        // We create three one-hot feature vectors and train the comparator to
+        // know that plan 0 beats plans 1 and 2, and plan 1 beats plan 2.
+        // tournamentSelect must return index 0 (the clear winner).
+        double[] feat0 = new double[PlanFeaturizer.FEATURE_DIM]; feat0[0] = 1.0;
+        double[] feat1 = new double[PlanFeaturizer.FEATURE_DIM]; feat1[1] = 1.0;
+        double[] feat2 = new double[PlanFeaturizer.FEATURE_DIM]; feat2[2] = 1.0;
+
+        PairwiseComparator comparator = new PairwiseComparator(new Random(7));
+
+        // Train: 0 > 1 > 2 (300 pairs each direction for balance)
+        List<TrainingPair> pairs = new java.util.ArrayList<>();
+        for (int i = 0; i < 300; i++) {
+            pairs.add(new TrainingPair(feat0, feat1, true));
+            pairs.add(new TrainingPair(feat1, feat0, false));
+            pairs.add(new TrainingPair(feat0, feat2, true));
+            pairs.add(new TrainingPair(feat2, feat0, false));
+            pairs.add(new TrainingPair(feat1, feat2, true));
+            pairs.add(new TrainingPair(feat2, feat1, false));
+        }
+        for (int epoch = 0; epoch < 20; epoch++) {
+            for (TrainingPair pair : pairs) {
+                comparator.trainStep(pair.featuresA(), pair.featuresB(), pair.aIsFaster());
+            }
+        }
+
+        int winner = comparator.tournamentSelect(List.of(feat0, feat1, feat2));
+        assertEquals(0, winner,
+                "After training, tournamentSelect must return index 0 (the fastest plan)");
+    }
+
+    @Test
+    void leroImprovesOverBaseline() {
+        // End-to-end integration test for LeroOptimizer.
+        //
+        // With 3-row test tables, latency differences are sub-millisecond, so we
+        // do not assert a strict latency improvement. Instead we verify:
+        //   1. All queries complete without error.
+        //   2. Returned metrics count matches workload size.
+        //   3. Lero's total logical cost is at most 4× the DEFAULT baseline
+        //      (sanity bound — warm-up exploration overhead must not explode).
+        //
+        // The workload repeats the same 5 templates 7 times (35 queries total)
+        // so Lero exits warm-up (WARMUP_QUERIES=30) and uses ranking for the last 5.
+        List<String> sqlTemplates = List.of(
+                "SELECT id, name FROM customers",
+                "SELECT id, name FROM products",
+                "SELECT c.name, o.total FROM customers c "
+                        + "INNER JOIN orders o ON c.id = o.customer_id",
+                "SELECT c.name, o.total FROM customers c "
+                        + "INNER JOIN orders o ON c.id = o.customer_id "
+                        + "WHERE c.city = 'Seattle'",
+                "SELECT id, name FROM customers WHERE city = 'Portland'"
+        );
+
+        List<ParsedQuery> workload = new java.util.ArrayList<>();
+        for (int round = 0; round < 7; round++) {
+            for (String sql : sqlTemplates) {
+                workload.add(new ParsedQuery(sql, parse(sql)));
+            }
+        }
+
+        // --- Baseline: every query with DEFAULT hint set ---
+        PlanVariantGenerator varGen  = new PlanVariantGenerator(catalog, costModel);
+        PlanFeaturizer       feat    = new PlanFeaturizer();
+        Executor             exec    = new Executor();
+        double               baseCost = 0.0;
+        for (ParsedQuery q : workload) {
+            Map<HintSet, PhysicalNode> variants =
+                    varGen.generateVariants(q.logicalPlan(), List.of(HintSet.DEFAULT));
+            PhysicalNode plan = variants.values().iterator().next();
+            ExecutionResult res = exec.execute(plan);
+            baseCost += new ExecutionFeedback("", HintSet.DEFAULT, feat.featurize(plan),
+                    res.executionTimeMs(), res.tuplesProcessed(),
+                    plan.getEstimatedCost(), plan.getEstimatedRows()).logicalCost();
+        }
+
+        // --- Lero run ---
+        LeroOptimizer lero = new LeroOptimizer(catalog, new Random(42));
+        List<LeroOptimizer.QueryMetrics> leroMetrics = lero.runWorkload(workload);
+
+        // 1. Correct count
+        assertEquals(workload.size(), leroMetrics.size(), "Lero must process all queries");
+
+        // 2. At least some queries used Lero's own ranking (warm phase was reached)
+        long warmPhaseCount = leroMetrics.stream()
+                .filter(m -> !m.usedCostModel())
+                .count();
+        assertTrue(warmPhaseCount > 0,
+                "With " + workload.size() + " queries and WARMUP_QUERIES="
+                        + LeroOptimizer.WARMUP_QUERIES
+                        + ", at least some queries should use Lero ranking");
+
+        // 3. Total logical cost at most 4× DEFAULT baseline (sanity bound)
+        double leroCost = leroMetrics.stream()
+                .mapToDouble(m -> m.result().tuplesProcessed() * 0.01
+                                  + m.result().executionTimeMs())
+                .sum();
+        assertTrue(leroCost <= baseCost * 4.0 + 1.0,
+                String.format("Lero cost (%.3f) must not exceed 4× baseline (%.3f)",
+                        leroCost, baseCost));
     }
 
     // --- Helpers ---

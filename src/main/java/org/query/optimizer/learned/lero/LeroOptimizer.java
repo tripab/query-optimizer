@@ -44,9 +44,9 @@ import java.util.Random;
 public class LeroOptimizer {
 
     /** Queries to explore before trusting the comparator's rankings. */
-    static final int WARMUP_QUERIES   = 30;
+    public static final int WARMUP_QUERIES   = 30;
     /** How often (in queries) to re-explore after the warm-up phase. */
-    static final int EXPLORE_INTERVAL = 10;
+    public static final int EXPLORE_INTERVAL = 10;
 
     private final PlanVariantGenerator variantGenerator;
     private final PlanFeaturizer       featurizer;
