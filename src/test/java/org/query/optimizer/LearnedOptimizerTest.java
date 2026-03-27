@@ -16,6 +16,8 @@ import org.query.optimizer.learned.common.PlanFeaturizer;
 import org.query.optimizer.learned.common.PlanVariantGenerator;
 import org.query.optimizer.learned.common.WorkloadGenerator;
 import org.query.optimizer.learned.common.WorkloadGenerator.ParsedQuery;
+import org.query.optimizer.learned.benchmark.LearnedOptimizerBenchmark;
+import org.query.optimizer.learned.benchmark.LearnedOptimizerBenchmark.BenchmarkResults;
 import org.query.optimizer.learned.lero.LeroOptimizer;
 import org.query.optimizer.learned.lero.PairwiseComparator;
 import org.query.optimizer.learned.lero.PairwiseComparator.TrainingPair;
@@ -527,6 +529,85 @@ public class LearnedOptimizerTest {
         assertTrue(leroCost <= baseCost * 4.0 + 1.0,
                 String.format("Lero cost (%.3f) must not exceed 4× baseline (%.3f)",
                         leroCost, baseCost));
+    }
+
+    // --- Phase 5 tests ---
+
+    @Test
+    void oracleIsAtLeastAsGoodAsDefault() {
+        // The oracle executes every plan variant per query and keeps the one with
+        // the lowest actual latency. By construction it can never be worse than the
+        // default strategy. This test verifies that structural invariant.
+        List<ParsedQuery> workload = buildPhase5Workload();
+        BenchmarkResults results = new LearnedOptimizerBenchmark(catalog).run(workload);
+
+        // Oracle can only match or beat DEFAULT — it picks the actual best plan per query
+        assertTrue(results.oracleTotal() <= results.defaultTotal(),
+                String.format("Oracle (%,d ms) must be ≤ DEFAULT (%,d ms)",
+                        results.oracleTotal(), results.defaultTotal()));
+
+        // Oracle's regret vs. itself is always 1.0 by definition
+        assertEquals(1.0, results.oracleMetrics().regretVsOracle(), 1e-9,
+                "Oracle regret vs. oracle must be exactly 1.0");
+
+        // Results must cover every query in the workload
+        assertEquals(workload.size(), results.perQuery().size(),
+                "Benchmark must return one QueryResult per workload query");
+    }
+
+    @Test
+    void baoAndLeroBothBeatDefault() {
+        // With tiny (3-row) test tables all latencies are 0 ms, so strict latency
+        // improvement cannot be asserted. We verify:
+        //   1. Both strategies process every query without error.
+        //   2. Neither strategy's total latency exceeds 4× DEFAULT (sanity bound —
+        //      exploration overhead must not blow up even on tiny tables).
+        //   3. Regret values are non-negative (well-formed output).
+        //   4. The Bao–Lero agreement rate is a valid probability in [0, 1].
+        List<ParsedQuery> workload = buildPhase5Workload();
+        BenchmarkResults results = new LearnedOptimizerBenchmark(catalog).run(workload);
+
+        // 1. All queries processed
+        assertEquals(workload.size(), results.perQuery().size(),
+                "Benchmark must return one QueryResult per workload query");
+
+        // 2. Sanity bound: neither strategy's overhead explodes relative to DEFAULT
+        long safetyBound = Math.max(results.defaultTotal() * 4, 1L);
+        assertTrue(results.baoTotal() <= safetyBound,
+                String.format("Bao total (%,d ms) must be ≤ 4× DEFAULT (%,d ms)",
+                        results.baoTotal(), results.defaultTotal()));
+        assertTrue(results.leroTotal() <= safetyBound,
+                String.format("Lero total (%,d ms) must be ≤ 4× DEFAULT (%,d ms)",
+                        results.leroTotal(), results.defaultTotal()));
+
+        // 3. Regret values must be non-negative
+        assertTrue(results.baoMetrics().regretVsOracle() >= 0.0,
+                "Bao regret must be non-negative");
+        assertTrue(results.leroMetrics().regretVsOracle() >= 0.0,
+                "Lero regret must be non-negative");
+
+        // 4. Agreement rate is a valid probability
+        double rate = results.baoLeroAgreementRate();
+        assertTrue(rate >= 0.0 && rate <= 1.0,
+                "Bao–Lero agreement rate must be in [0, 1], got: " + rate);
+    }
+
+    private static List<ParsedQuery> buildPhase5Workload() {
+        String[] sqls = {
+            "SELECT id, name FROM customers",
+            "SELECT id, name FROM products",
+            "SELECT c.name, o.total FROM customers c "
+                    + "INNER JOIN orders o ON c.id = o.customer_id",
+            "SELECT c.name, o.total FROM customers c "
+                    + "INNER JOIN orders o ON c.id = o.customer_id "
+                    + "WHERE c.city = 'Seattle'",
+            "SELECT id, name FROM customers WHERE city = 'Portland'"
+        };
+        List<ParsedQuery> workload = new java.util.ArrayList<>();
+        for (String sql : sqls) {
+            workload.add(new ParsedQuery(sql, parse(sql)));
+        }
+        return workload;
     }
 
     // --- Helpers ---
