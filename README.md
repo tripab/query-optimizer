@@ -1081,6 +1081,61 @@ disagreement analysis, and warm-up vs. warm-phase statistics.
 
 ---
 
+### Comparison Benchmark
+
+#### LearnedOptimizerBenchmark
+
+Runs the same workload through all four strategies — DEFAULT, ORACLE, BAO, and LERO —
+and produces both per-query and aggregate metrics. The ORACLE strategy executes every
+distinct plan variant and keeps the cheapest one, giving the theoretical performance
+ceiling no strategy can beat.
+
+Metrics computed per strategy:
+
+| Metric | Description |
+|---|---|
+| Total latency | Sum of all per-query execution times |
+| Regret vs. oracle | `total / oracleTotal`; 1.0 = perfect |
+| Learning speed | First query at which rolling avg ≤ 1.2× oracle rolling avg |
+| P95 / P99 tail latency | 95th and 99th percentile per-query latency |
+
+Cross-strategy metric: **Bao–Lero agreement rate** — fraction of queries where both
+strategies chose a plan with the same estimated cost. Used as a proxy for structural
+plan identity (see Javadoc for full rationale).
+
+```java
+LearnedOptimizerBenchmark bench = new LearnedOptimizerBenchmark(catalog);
+BenchmarkResults results = bench.run(workload);
+
+results.defaultTotal();           // total ms for DEFAULT
+results.oracleTotal();            // total ms for ORACLE (ceiling)
+results.baoTotal();               // total ms for BAO
+results.leroTotal();              // total ms for LERO
+results.baoLeroAgreementRate();   // 0.0–1.0
+results.baoMetrics().regretVsOracle();    // e.g. 1.15 = 15% above oracle
+results.leroMetrics().learningSpeedQuery(); // query index where Lero converged
+```
+
+#### BaoVsLeroDemo
+
+The showpiece combined demo. Generates a 300-query workload, runs all four strategies
+through `LearnedOptimizerBenchmark`, and prints a five-section report:
+
+1. **Overview** — one-row summary per strategy (total ms, regret ratio, P95/P99, convergence query)
+2. **Learning curves** — cumulative latency at queries 50/100/150/200/250/300 for all four strategies
+3. **Bao deep-dive** — arm selection counts split into early/mid/late thirds; arm diversity per
+   period as a proxy for the exploration → exploitation transition
+4. **Lero deep-dive** — pairwise comparator accuracy at queries 50/100/200/300 (trained
+   incrementally), plus warm-up vs. warm-phase latency breakdown
+5. **Head-to-head** — per-query win/loss between Bao and Lero, agreement rate, and shared failure
+   modes (queries where both strategies underperformed the default)
+
+```bash
+mvn -q exec:java -Dexec.mainClass=org.query.optimizer.learned.benchmark.BaoVsLeroDemo
+```
+
+---
+
 ## Run Tests
 
 These runs automatically when you build with Maven without skipping tests,
@@ -1089,6 +1144,7 @@ These runs automatically when you build with Maven without skipping tests,
 - ParsingAndLogicalPlansTest contains end-to-end tests for Milestone 2 features
 - RuleEngineAndOptimizationsTest contains end-to-end tests for Milestone 3 features
 - LearnedOptimizerTest contains end-to-end tests for the AI plan selection features
+  (Phase 1–5: featurization, MLP training, Bao/Lero correctness, and benchmark invariants)
 
 ## File Reference
 
@@ -1151,4 +1207,6 @@ These runs automatically when you build with Maven without skipping tests,
 | `org/query/optimizer/learned/lero/PlanExplorer.java`                     | Execute all variants and generate training pairs     |
 | `org/query/optimizer/learned/lero/LeroOptimizer.java`                    | Lero end-to-end optimizer with warm-up/warm phases   |
 | `org/query/optimizer/learned/lero/LeroDemo.java`                         | Lero demonstration with accuracy and ranking output  |
-| `org/query/optimizer/LearnedOptimizerTest.java`                          | Tests for all AI plan selection components           |
+| `org/query/optimizer/learned/benchmark/LearnedOptimizerBenchmark.java`   | Four-strategy harness (DEFAULT/ORACLE/BAO/LERO)      |
+| `org/query/optimizer/learned/benchmark/BaoVsLeroDemo.java`               | Five-section head-to-head comparative report         |
+| `org/query/optimizer/LearnedOptimizerTest.java`                          | Tests for all AI plan selection components (Phase 1–5)|
