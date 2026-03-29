@@ -1,10 +1,14 @@
 # A query optimizer built from scratch in Java
 
-This project aims to be at the level between a toy demo and full production-grade system, and the motivation is to
-understand the internals of a typical query optimizer by implementing one.
+A from-scratch implementation of a relational query optimizer in Java, sitting between a toy demo and a
+production-grade system. It covers the full pipeline: a CSV-backed catalog, a hand-written SQL parser, logical and
+physical plan trees, rule-based optimization (predicate/projection pushdown, filter merge), cost modeling with
+cardinality estimation, dynamic-programming join ordering, histogram-based selectivity, cost calibration, two
+execution engines (Volcano iterator and vectorized batch-at-a-time), and two AI-powered plan selection strategies
+(Bao and Lero).
 
-I will be implementing this project in a phased manner, and will hopefully be able to add a few blog posts documenting
-my experience.
+The project is documented in a blog post series:
+[Building a simple query optimizer from scratch, Part 1](https://abhinavtripathi.bearblog.dev/building-simple-query-optimizer-from-scratch-part-1/)
 
 ## Milestone 1: Foundation & Catalog
 
@@ -870,6 +874,221 @@ graph TD
 4. Join algorithm comparison
 5. Complete pipeline (parse -> optimize -> execute)
 
+## Vectorized Execution
+
+### Overview
+
+Alongside the Volcano iterator model, the optimizer includes a second execution engine that processes data in
+batches rather than one tuple at a time. The two engines accept the same optimized logical plan and produce the
+same `ExecutionResult`, making it straightforward to compare their outputs.
+
+**Why vectorized execution?**
+
+The Volcano model calls `next()` once per tuple. Each call crosses operator boundaries, which adds up to millions
+of virtual dispatch events for large tables. Vectorized execution amortizes that overhead by returning a batch of
+up to 1024 rows per `next()` call. Fewer calls means less interpreter overhead and, more importantly, tighter
+inner loops that the JIT can autovectorize over typed primitive arrays.
+
+### Columnar Storage
+
+#### ColumnVector
+
+The fundamental storage unit. Instead of boxing values into `Object[]`, each column is stored as a typed
+primitive array chosen at construction time:
+
+| Data type | Backing array |
+|-----------|---------------|
+| INTEGER   | `int[]`       |
+| FLOAT     | `float[]`     |
+| VARCHAR   | `String[]`    |
+
+Null tracking uses a separate `boolean[]` so it stays off the hot path when iterating non-null columns.
+Typed getters (`getInt`, `getFloat`, `getString`) avoid boxing entirely on the read path.
+
+```java
+ColumnVector v = ColumnVector.create(DataType.INTEGER, 1024);
+v.putInt(0, 42);
+int val = v.getInt(0);   // no boxing, direct array access
+```
+
+#### ColumnBatch
+
+A horizontal slice of a table: one `ColumnVector` per schema column, all sharing the same logical row count.
+This is the unit exchanged between operators -- analogous to the single `Object[]` in the Volcano model, but
+carrying up to `DEFAULT_BATCH_SIZE` (1024) rows per call.
+
+```java
+// DEFAULT_BATCH_SIZE = 1024 -- same as CockroachDB, DuckDB, and Velox
+ColumnBatch batch = new ColumnBatch(schema);
+batch.setSize(rowCount);
+ColumnVector priceCol = batch.getVector("price");
+```
+
+**Selection vectors.** Rather than physically removing non-qualifying rows after a filter, a batch carries an
+optional `int[]` selection vector listing the indices of live rows. Downstream operators iterate only those
+indices:
+
+```java
+int[]  sv   = batch.getSelectionVector();
+int    size = batch.getSelectionSize();
+for (int i = 0; i < size; i++) {
+    int row = sv[i];
+    // read batch.getVector(col).getInt(row)
+}
+```
+
+This avoids all data movement. The column arrays are never compacted; the branch predictor handles the tight
+loop cleanly.
+
+#### ColumnarTable
+
+The existing `TableMetadata` stores rows in row-major form. `ColumnarTable` performs a one-time pivot to
+column-major layout on first access, then caches the result in the catalog.
+
+```mermaid
+graph LR
+  A["TableMetadata (row-major)"] -->|"pivot once"| B["ColumnarTable (column-major)\none ColumnVector per column"]
+  B -->|"slice into batches"| C["VectorizedScan"]
+```
+
+A filter on `price` only needs to load `price`'s `float[]` into cache. In row-oriented storage, every cache
+line also pulls in `id`, `name`, and every other column the filter ignores.
+
+---
+
+### VectorizedOperator Interface
+
+The vectorized counterpart of the Volcano `Iterator`. The lifecycle is identical -- `open / next / close` --
+but `next()` returns a `ColumnBatch` instead of a single tuple.
+
+```java
+VectorizedOperator plan = new VectorizedPlanBuilder(catalog).build(logicalPlan);
+plan.open();
+ColumnBatch batch;
+while ((batch = plan.next()) != null) {
+    // process up to 1024 rows per iteration
+}
+plan.close();
+```
+
+Operators reuse the same `ColumnBatch` instance across `next()` calls (allocated once in `open()`). Callers
+that need to retain a batch past the next call must copy the relevant data out first.
+
+---
+
+### Operators
+
+#### VectorizedScan
+
+Reads a `ColumnarTable` and emits one batch per `next()` call by slicing each column vector into the output
+batch using `System.arraycopy`. No selection vector is set -- all rows in the batch are live.
+
+#### VectorizedFilter
+
+Evaluates a predicate over an entire batch using `VectorizedExpressionEvaluator.evaluateFilter`, which
+populates a selection vector rather than copying qualifying rows. The filter never moves data; it only marks
+which rows survive.
+
+Stacking two `VectorizedFilter` nodes is equivalent to a single AND predicate with no extra work:
+`evaluateFilter` automatically intersects with any existing selection vector on the incoming batch.
+
+When every row in a batch is eliminated, the operator silently fetches the next batch from its input rather
+than surfacing an empty batch to the caller.
+
+#### VectorizedHashJoin
+
+A two-phase inner equi-join (single join column):
+
+```mermaid
+graph TD
+  A["open() -- BUILD PHASE"] --> B["Consume entire right (build) input"]
+  B --> C["Materialize each live row to Object[] and insert into HashMap"]
+  C --> D["next() -- PROBE PHASE"]
+  D --> E["Pull probe batches from left input"]
+  E --> F["For each live probe row, look up key in HashMap"]
+  F --> G["Emit matching pairs into output batch"]
+  G --> H{"Output batch full?"}
+  H -->|"yes -- return batch"| D
+  H -->|"no -- continue"| E
+```
+
+The build phase runs entirely inside `open()`, making the probe phase a pure streaming loop. A state machine
+preserves position across `next()` calls so a match stream that spans more than one output batch is handled
+correctly.
+
+#### VectorizedAggregate
+
+A blocking operator with two clearly separated phases:
+
+1. **Accumulation** -- the first `next()` call drains all input batches. For each live row, the group key is
+   extracted as a `List<Object>` and used to look up (or create) an `AggregateAccumulator` array in a
+   `LinkedHashMap`. Each accumulator (`CountAccumulator`, `SumAccumulator`, etc.) is updated in-place.
+   Selection vectors on input batches are fully respected.
+
+2. **Emission** -- subsequent `next()` calls iterate the group map and write results into output batches of
+   up to 1024 rows. A `LinkedHashMap` preserves insertion order for deterministic output.
+
+Supported aggregate functions: `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`. Output type inference:
+
+| Function        | Output type                    |
+|-----------------|--------------------------------|
+| `COUNT`         | INTEGER                        |
+| `AVG`           | FLOAT                          |
+| `SUM/MIN/MAX`   | Same as input column type      |
+
+#### VectorizedProject
+
+Selects a subset of columns from each input batch by swapping `ColumnVector` references in the output batch,
+not by copying data. The selection vector from the input batch (if any) is preserved unchanged.
+
+---
+
+### VectorizedPlanBuilder
+
+Converts the same `LogicalNode` tree used by `PhysicalPlanBuilder` into a tree of `VectorizedOperator`s.
+Both builders accept the same input, which makes side-by-side comparison straightforward:
+
+```java
+LogicalNode logicalPlan = new LogicalPlanBuilder(catalog).build(ast);
+logicalPlan = ruleEngine.optimize(logicalPlan);
+
+// Volcano path
+PhysicalNode    volcanoPlan  = new PhysicalPlanBuilder(catalog).build(logicalPlan);
+ExecutionResult volcanoResult = new Executor().execute(volcanoPlan);
+
+// Vectorized path
+VectorizedOperator vecPlan   = new VectorizedPlanBuilder(catalog).build(logicalPlan);
+ExecutionResult    vecResult  = new VectorizedExecutor().execute(vecPlan);
+
+// Same result type -- directly comparable
+assertEquals(volcanoResult.tuples(), vecResult.tuples());
+```
+
+Supported conversions:
+
+| Logical operator   | Vectorized operator      |
+|--------------------|--------------------------|
+| `LogicalScan`      | `VectorizedScan`         |
+| `LogicalFilter`    | `VectorizedFilter`       |
+| `LogicalProject`   | `VectorizedProject`      |
+| `LogicalJoin`      | `VectorizedHashJoin`     |
+| `LogicalAggregate` | `VectorizedAggregate`    |
+
+### VectorizedExecutor
+
+Drives the operator tree and materializes results into the same `ExecutionResult` used by the Volcano
+`Executor`. When a batch carries a selection vector, only the selected rows are emitted.
+
+```java
+VectorizedExecutor exec = new VectorizedExecutor();
+ExecutionResult result = exec.execute(plan);
+
+// Or print a formatted result table to stdout
+exec.executeAndPrint(plan);
+```
+
+---
+
 ## AI-Powered Plan Selection
 
 The optimizer includes two learned plan selection strategies that sit on top of the
@@ -1175,6 +1394,19 @@ These runs automatically when you build with Maven without skipping tests,
 | `org/query/optimizer/executor/Executor.java`                             | Execution engine                                     |
 | `org/query/optimizer/PhysicalExecutionDemo.java`                         | Complete demonstrations                              |
 | `org/query/optimizer/PhysicalExecutionTest.java`                         | Automated tests                                      |
+| `org/query/optimizer/vectorized/ColumnVector.java`                       | Typed columnar storage for a single column           |
+| `org/query/optimizer/vectorized/ColumnBatch.java`                        | Batch of rows in columnar form with selection vector |
+| `org/query/optimizer/vectorized/ColumnarTable.java`                      | Row-to-column pivot of TableMetadata (cached)        |
+| `org/query/optimizer/vectorized/VectorizedOperator.java`                 | Batch-at-a-time operator interface (open/next/close) |
+| `org/query/optimizer/vectorized/VectorizedExpressionEvaluator.java`      | Predicate evaluation over a batch; builds sel-vector |
+| `org/query/optimizer/vectorized/VectorizedScan.java`                     | Scans a ColumnarTable and emits batches              |
+| `org/query/optimizer/vectorized/VectorizedFilter.java`                   | Filter via selection vector, no data movement        |
+| `org/query/optimizer/vectorized/VectorizedProject.java`                  | Column selection by swapping vector references       |
+| `org/query/optimizer/vectorized/VectorizedHashJoin.java`                 | Two-phase hash join (build + probe)                  |
+| `org/query/optimizer/vectorized/AggregateAccumulator.java`               | Per-group accumulators for COUNT/SUM/AVG/MIN/MAX     |
+| `org/query/optimizer/vectorized/VectorizedAggregate.java`                | Blocking aggregation with accumulate/emit phases     |
+| `org/query/optimizer/vectorized/VectorizedPlanBuilder.java`              | Logical plan to vectorized operator tree             |
+| `org/query/optimizer/vectorized/VectorizedExecutor.java`                 | Drives vectorized tree; returns ExecutionResult      |
 | `org/query/optimizer/learned/common/HintSet.java`                        | Immutable optimizer configuration with 5 presets     |
 | `org/query/optimizer/learned/common/PlanVariantGenerator.java`           | Generate + deduplicate physical plan variants        |
 | `org/query/optimizer/learned/common/PlanFeaturizer.java`                 | Convert plan tree to 34-dim feature vector           |
