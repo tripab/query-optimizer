@@ -143,12 +143,8 @@ Both logical and physical nodes support annotations for optimizer metadata:
 
 ```java
 node.setEstimatedRows(1000);
-node.
-
-setEstimatedCost(25.5);
-node.
-
-setAnnotation("selectivity",0.1);
+node.setEstimatedCost(25.5);
+node.setAnnotation("selectivity", 0.1);
 
 long rows = node.getEstimatedRows();
 double cost = node.getEstimatedCost();
@@ -157,7 +153,7 @@ double cost = node.getEstimatedCost();
 Pretty printing automatically displays annotations:
 
 ```
-└── Scan[products] [rows=7, cost=0.07]
++-- Scan[products] [rows=7, cost=0.07]
 ```
 
 ## Milestone 2: Parsing & Logical Plans
@@ -174,9 +170,8 @@ foundation for query optimization by creating a clean, normalized representation
 ```sql
 SELECT column1, column2, aggregate(column)
 FROM table1
-         INNER JOIN table2 ON condition
-    [
-         INNER JOIN table3 ON condition]
+    [INNER JOIN table2 ON condition]
+    [INNER JOIN table3 ON condition]
 WHERE condition
 GROUP BY column1, column2
 ```
@@ -203,24 +198,18 @@ GROUP BY column1, column2
 
 Complete Abstract Syntax Tree hierarchy in `AST.java`:
 
-```java
-SelectStmt
-├──
-
-SelectItem(abstract)
-│   ├──ColumnSelectItem        // Regular columns
-│   └──AggregateSelectItem     // COUNT(*), SUM(col), etc.
-├──
-
-FromClause(abstract)
-│   ├──TableRef                // Single table
-│   └──JoinClause              // INNER JOIN
-└──
-
-Expr(abstract)
-    ├──ColumnExpr              // Column reference
-    ├──LiteralExpr             // Constant value
-    └──BinaryExpr              // Operators
+```mermaid
+graph TD
+  SelectStmt --> SelectItem["SelectItem (abstract)"]
+  SelectItem --> ColumnSelectItem["ColumnSelectItem -- regular columns"]
+  SelectItem --> AggregateSelectItem["AggregateSelectItem -- COUNT(*), SUM(col), etc."]
+  SelectStmt --> FromClause["FromClause (abstract)"]
+  FromClause --> TableRef["TableRef -- single table reference"]
+  FromClause --> JoinClause["JoinClause -- INNER JOIN"]
+  SelectStmt --> Expr["Expr (abstract)"]
+  Expr --> ColumnExpr["ColumnExpr -- column reference"]
+  Expr --> LiteralExpr["LiteralExpr -- constant value"]
+  Expr --> BinaryExpr["BinaryExpr -- operators"]
 ```
 
 **Usage Example:**
@@ -228,9 +217,7 @@ Expr(abstract)
 ```java
 SQLParser parser = new SQLParser();
 AST.SelectStmt ast = parser.parse("SELECT name FROM products WHERE price > 100");
-System.out.
-
-println(ast); // Pretty-prints the AST
+System.out.println(ast); // Pretty-prints the AST
 ```
 
 ### Logical Operators
@@ -265,9 +252,7 @@ Converts AST to logical plan with **canonical form enforcement**:
 
 ```java
 Catalog catalog = new Catalog();
-catalog.
-
-loadTableFromCSV("products","products.csv");
+catalog.loadTableFromCSV("products", "products.csv");
 
 SQLParser parser = new SQLParser();
 LogicalPlanBuilder builder = new LogicalPlanBuilder(catalog);
@@ -278,9 +263,9 @@ LogicalNode plan = builder.build(ast);
 
 // Plan structure (canonical form):
 // Project[name]
-// └── Filter[(price > 100)]
-//     └── Filter[(category = 'Electronics')]
-//         └── Scan[products]
+// +-- Filter[(price > 100)]
+//     +-- Filter[(category = 'Electronics')]
+//         +-- Scan[products]
 ```
 
 ## Milestone 3: Rule Engine & Optimization
@@ -294,27 +279,23 @@ estimation. This is where query plans get transformed into more efficient equiva
 
 **Architecture:**
 
-```
-RuleEngine
-├── Applies rules repeatedly until no changes (fixpoint)
-├── Bottom-up traversal (children optimized first)
-├── Configurable iteration limit
-└── Verbose mode for debugging
+```mermaid
+graph TD
+  RuleEngine["RuleEngine"] --> A["Apply rules repeatedly until no changes (fixpoint)"]
+  RuleEngine --> B["Bottom-up traversal -- children optimized first"]
+  RuleEngine --> C["Configurable iteration limit"]
+  RuleEngine --> D["Verbose mode for debugging"]
 ```
 
 **Key Algorithm:**
 
-```java
-while(not fixpoint &&iterations<max){
-        for
-each rule:
-apply rule
-exhaustively to
-entire tree
-    if(
-no changes):
-        break // fixpoint reached
-        }
+```
+while (not fixpoint && iterations < max) {
+    for each rule:
+        apply rule exhaustively to entire tree
+    if (no changes):
+        break  // fixpoint reached
+}
 ```
 
 **Usage:**
@@ -334,24 +315,32 @@ LogicalNode optimizedPlan = engine.optimize(initialPlan);
 
 #### 1. Predicate Pushdown
 
-**Pattern:** `Filter → Join`  
+**Pattern:** `Filter -> Join`
 **Transform:** Push filter to appropriate join input
 
 **Algorithm:**
 
 1. Analyze which tables the predicate references
-2. If predicate references only left table → push to left child
-3. If predicate references only right table → push to right child
-4. If predicate references both → keep above join
+2. If predicate references only left table -> push to left child
+3. If predicate references only right table -> push to right child
+4. If predicate references both -> keep above join
 
-**Example:**
+**Before:**
 
+```mermaid
+graph TD
+  A["Filter[city='Seattle']"] --> B["Join[c.id = o.cust_id]"]
+  B --> C["Scan[customers]"]
+  B --> D["Scan[orders]"]
 ```
-BEFORE:                          AFTER:
-Filter[city='Seattle']           Join[c.id = o.customer_id]
-└── Join[c.id = o.cust_id]      ├── Filter[city='Seattle']
-    ├── Scan[customers]         │   └── Scan[customers]
-    └── Scan[orders]            └── Scan[orders]
+
+**After:**
+
+```mermaid
+graph TD
+  A["Join[c.id = o.customer_id]"] --> B["Filter[city='Seattle']"]
+  A --> D["Scan[orders]"]
+  B --> C["Scan[customers]"]
 ```
 
 **Why it works:** For inner joins, filtering before or after produces same result, but filtering earlier reduces
@@ -359,37 +348,50 @@ intermediate result size.
 
 #### 2. Projection Pushdown
 
-**Pattern:** `Project → Filter`  
-**Transform:** Swap to `Filter → Project`
+**Pattern:** `Project -> Filter`
+**Transform:** Swap to `Filter -> Project`
 
 **Safety Check:**
 
 - Ensure filter predicate doesn't reference columns eliminated by projection
 - Only swap if safe
 
-**Example:**
+**Before:**
 
+```mermaid
+graph TD
+  A["Project[name]"] --> B["Filter[price > 100]"]
+  B --> C["Scan[products]"]
 ```
-BEFORE:                    AFTER:
-Project[name]              Filter[price > 100]
-└── Filter[price > 100]    └── Project[name]
-    └── Scan[products]         └── Scan[products]
+
+**After:**
+
+```mermaid
+graph TD
+  A["Filter[price > 100]"] --> B["Project[name]"]
+  B --> C["Scan[products]"]
 ```
 
 **Why it works:** Filters don't change schema, and filtering first reduces data volume.
 
 #### 3. Filter Merge
 
-**Pattern:** `Filter → Filter`  
+**Pattern:** `Filter -> Filter`
 **Transform:** Single filter with AND predicate
 
-**Example:**
+**Before:**
 
+```mermaid
+graph TD
+  A["Filter[age > 30]"] --> B["Filter[city='Seattle']"]
+  B --> C["Scan[customers]"]
 ```
-BEFORE:                          AFTER:
-Filter[age > 30]                 Filter[(city='Seattle') AND (age > 30)]
-└── Filter[city='Seattle']       └── Scan[customers]
-    └── Scan[customers]
+
+**After:**
+
+```mermaid
+graph TD
+  A["Filter[(city='Seattle') AND (age > 30)]"] --> B["Scan[customers]"]
 ```
 
 **Why it works:** Reduces operator overhead during execution. This reverses the canonical form after optimization is
@@ -505,20 +507,6 @@ long scanCard = estimator.estimate(scan);  // 7
 Expression pred = ... // category = 'Electronics'
 LogicalFilter filter = new LogicalFilter(pred, scan);
 long filterCard = estimator.estimate(filter);  // ~3-4
-
-
-##
-Running the
-Demo
-
-###Build
-
-```bash
-git clone
-https://github.com/tripab/query-optimizer
-cd query-optimizer
-mvn clean
-install
 ```
 
 ## Milestone 4: Physical Execution
@@ -573,8 +561,6 @@ long timeMs = result.getExecutionTimeMs();
 
 ### The Volcano Iterator Model
 
-### Concept
-
 Each operator is an **iterator** that:
 
 1. **Opens** - Initializes state, opens children
@@ -612,16 +598,15 @@ class PhysicalFilter implements Iterator {
 
 ### Pipeline Execution
 
-Operators **compose** naturally:
+Operators **compose** naturally. Each `next()` call pulls lazily through the tree:
 
-```
-Project.next()
-  → calls Filter.next()
-    → calls Scan.next()
-      → returns tuple
-    → evaluates predicate
-  → evaluates projection
-→ returns projected tuple
+```mermaid
+graph TD
+  A["Project.next()"] -->|"calls"| B["Filter.next()"]
+  B -->|"calls"| C["Scan.next()"]
+  C -->|"returns raw tuple"| B
+  B -->|"returns tuple if predicate passes"| A
+  A -->|"returns projected tuple"| Z["caller"]
 ```
 
 ## Physical Plan Builder
@@ -635,10 +620,10 @@ PhysicalNode physical = builder.build(logicalPlan);
 
 **Conversion rules:**
 
-- `LogicalScan` → `PhysicalScan`
-- `LogicalFilter` → `PhysicalFilter`
-- `LogicalProject` → `PhysicalProject`
-- `LogicalJoin` → `PhysicalHashJoin` (if equi-join) or `PhysicalNestedLoopJoin`
+- `LogicalScan` -> `PhysicalScan`
+- `LogicalFilter` -> `PhysicalFilter`
+- `LogicalProject` -> `PhysicalProject`
+- `LogicalJoin` -> `PhysicalHashJoin` (if equi-join) or `PhysicalNestedLoopJoin`
 
 **Schema propagation:**
 
@@ -733,10 +718,10 @@ WHERE category = 'Electronics'
 
 **Logical Plan:**
 
-```
-└── Project[name, price]
-    └── Filter[(category = 'Electronics')]
-        └── Scan[products]
+```mermaid
+graph TD
+  A["Project[name, price]"] --> B["Filter[(category = 'Electronics')]"]
+  B --> C["Scan[products]"]
 ```
 
 #### Query 2: Canonical Form Demo
@@ -750,11 +735,11 @@ WHERE city = 'Seattle'
 
 **Logical Plan (Note: 2 separate Filter nodes):**
 
-```
-└── Project[name]
-    └── Filter[(age > 30)]
-        └── Filter[(city = 'Seattle')]
-            └── Scan[customers]
+```mermaid
+graph TD
+  A["Project[name]"] --> B["Filter[(age > 30)]"]
+  B --> C["Filter[(city = 'Seattle')]"]
+  C --> D["Scan[customers]"]
 ```
 
 #### Query 3: Join
@@ -768,12 +753,12 @@ WHERE c.city = 'Seattle'
 
 **Logical Plan:**
 
-```
-└── Project[name, total]
-    └── Filter[(city = 'Seattle')]
-        └── Join[INNER, (c.id = o.customer_id)]
-            ├── Scan[customers]
-            └── Scan[orders]
+```mermaid
+graph TD
+  A["Project[name, total]"] --> B["Filter[(city = 'Seattle')]"]
+  B --> C["Join[INNER, (c.id = o.customer_id)]"]
+  C --> D["Scan[customers]"]
+  C --> E["Scan[orders]"]
 ```
 
 #### Query 4: Aggregation
@@ -786,10 +771,10 @@ GROUP BY category
 
 **Logical Plan:**
 
-```
-└── Project[category, count_*, avg_price]
-    └── Aggregate[GROUP BY: category; AGGS: COUNT(*) AS count_*, AVG(price) AS avg_price]
-        └── Scan[products]
+```mermaid
+graph TD
+  A["Project[category, count_star, avg_price]"] --> B["Aggregate[GROUP BY: category; COUNT(*), AVG(price)]"]
+  B --> C["Scan[products]"]
 ```
 
 ### Run the **RuleEngineAndOptimizationsDemo** class to see the Milestone 3 features in action.
@@ -819,24 +804,24 @@ WHERE c.city = 'Seattle'
 
 **Initial Plan (Unoptimized):**
 
-```
-Project[name, total] [rows=?, cost=?]
-└── Filter[(o.total > 100)]
-    └── Filter[(c.city = 'Seattle')]
-        └── Join[INNER, c.id = o.customer_id]
-            ├── Scan[customers] [rows=8]
-            └── Scan[orders] [rows=10]
+```mermaid
+graph TD
+  A["Project[name, total]"] --> B["Filter[(o.total > 100)]"]
+  B --> C["Filter[(c.city = 'Seattle')]"]
+  C --> D["Join[INNER, c.id = o.customer_id]"]
+  D --> E["Scan[customers] [rows=8]"]
+  D --> F["Scan[orders] [rows=10]"]
 ```
 
 **After Optimization:**
 
-```
-Project[name, total] [rows=2, cost=1.85]
-└── Join[INNER, c.id = o.customer_id] [rows=2, cost=1.75]
-    ├── Filter[(c.city = 'Seattle')] [rows=4, cost=0.12]
-    │   └── Scan[customers] [rows=8, cost=0.11]
-    └── Filter[(o.total > 100)] [rows=3, cost=0.14]
-        └── Scan[orders] [rows=10, cost=0.13]
+```mermaid
+graph TD
+  A["Project[name, total] [rows=2, cost=1.85]"] --> B["Join[INNER, c.id = o.customer_id] [rows=2, cost=1.75]"]
+  B --> C["Filter[(c.city = 'Seattle')] [rows=4, cost=0.12]"]
+  B --> D["Filter[(o.total > 100)] [rows=3, cost=0.14]"]
+  C --> E["Scan[customers] [rows=8, cost=0.11]"]
+  D --> F["Scan[orders] [rows=10, cost=0.13]"]
 ```
 
 **Optimizations Applied:**
@@ -883,7 +868,7 @@ Project[name, total] [rows=2, cost=1.85]
 2. Filter execution
 3. Join execution
 4. Join algorithm comparison
-5. Complete pipeline (parse → optimize → execute)
+5. Complete pipeline (parse -> optimize -> execute)
 
 ## AI-Powered Plan Selection
 
@@ -918,7 +903,7 @@ structurally identical plans before returning.
 ```java
 PlanVariantGenerator gen = new PlanVariantGenerator(catalog, costModel);
 Map<HintSet, PhysicalNode> variants = gen.generateVariants(logicalPlan, HintSet.allHintSets());
-// A join query typically yields 2–4 distinct physical plans
+// A join query typically yields 2-4 distinct physical plans
 ```
 
 #### PlanFeaturizer
@@ -1008,8 +993,8 @@ with the lowest sampled predicted latency.
 
 #### BanditOptimizer
 
-Orchestrates the full Bao loop: generate variants → featurize → Thompson sample →
-execute → record feedback.
+Orchestrates the full Bao loop: generate variants -> featurize -> Thompson sample ->
+execute -> record feedback.
 
 ```java
 BanditOptimizer bao = new BanditOptimizer(catalog);
@@ -1029,13 +1014,13 @@ arm selection histogram, per-query latency breakdown, and Bao vs. default compar
 ### Lero: Learning-to-Rank Plan Selection
 
 Lero avoids predicting absolute latency. Instead, it trains a pairwise comparator
-that learns to say "plan A is faster than plan B" — a strictly easier learning task.
+that learns to say "plan A is faster than plan B" -- a strictly easier learning task.
 
 #### PairwiseComparator
 
 A Siamese neural network: both plans are encoded by the same shared encoder
-(`34 → 64 → 32`), the resulting embeddings are concatenated with their difference
-(`96`-dim), and a classifier (`96 → 32 → 1`) outputs P(plan A is faster than plan B).
+(`34 -> 64 -> 32`), the resulting embeddings are concatenated with their difference
+(`96`-dim), and a classifier (`96 -> 32 -> 1`) outputs P(plan A is faster than plan B).
 
 ```java
 PairwiseComparator comparator = new PairwiseComparator();
@@ -1044,7 +1029,7 @@ PairwiseComparator comparator = new PairwiseComparator();
 double loss = comparator.trainStep(featuresA, featuresB, /* aIsFaster= */ true);
 
 // Compare two plans
-double prob = comparator.compare(featuresA, featuresB);  // > 0.5 → A predicted faster
+double prob = comparator.compare(featuresA, featuresB);  // > 0.5 -> A predicted faster
 
 // Pick the best plan from a set via round-robin tournament
 int bestIdx = comparator.tournamentSelect(List.of(feat0, feat1, feat2, feat3));
@@ -1085,7 +1070,7 @@ disagreement analysis, and warm-up vs. warm-phase statistics.
 
 #### LearnedOptimizerBenchmark
 
-Runs the same workload through all four strategies — DEFAULT, ORACLE, BAO, and LERO —
+Runs the same workload through all four strategies -- DEFAULT, ORACLE, BAO, and LERO --
 and produces both per-query and aggregate metrics. The ORACLE strategy executes every
 distinct plan variant and keeps the cheapest one, giving the theoretical performance
 ceiling no strategy can beat.
@@ -1096,10 +1081,10 @@ Metrics computed per strategy:
 |---|---|
 | Total latency | Sum of all per-query execution times |
 | Regret vs. oracle | `total / oracleTotal`; 1.0 = perfect |
-| Learning speed | First query at which rolling avg ≤ 1.2× oracle rolling avg |
+| Learning speed | First query at which rolling avg <= 1.2x oracle rolling avg |
 | P95 / P99 tail latency | 95th and 99th percentile per-query latency |
 
-Cross-strategy metric: **Bao–Lero agreement rate** — fraction of queries where both
+Cross-strategy metric: **Bao-Lero agreement rate** -- fraction of queries where both
 strategies chose a plan with the same estimated cost. Used as a proxy for structural
 plan identity (see Javadoc for full rationale).
 
@@ -1107,13 +1092,13 @@ plan identity (see Javadoc for full rationale).
 LearnedOptimizerBenchmark bench = new LearnedOptimizerBenchmark(catalog);
 BenchmarkResults results = bench.run(workload);
 
-results.defaultTotal();           // total ms for DEFAULT
-results.oracleTotal();            // total ms for ORACLE (ceiling)
-results.baoTotal();               // total ms for BAO
-results.leroTotal();              // total ms for LERO
-results.baoLeroAgreementRate();   // 0.0–1.0
-results.baoMetrics().regretVsOracle();    // e.g. 1.15 = 15% above oracle
-results.leroMetrics().learningSpeedQuery(); // query index where Lero converged
+results.defaultTotal();                         // total ms for DEFAULT
+results.oracleTotal();                          // total ms for ORACLE (ceiling)
+results.baoTotal();                             // total ms for BAO
+results.leroTotal();                            // total ms for LERO
+results.baoLeroAgreementRate();                 // 0.0-1.0
+results.baoMetrics().regretVsOracle();          // e.g. 1.15 = 15% above oracle
+results.leroMetrics().learningSpeedQuery();     // query index where Lero converged
 ```
 
 #### BaoVsLeroDemo
@@ -1121,13 +1106,13 @@ results.leroMetrics().learningSpeedQuery(); // query index where Lero converged
 The showpiece combined demo. Generates a 300-query workload, runs all four strategies
 through `LearnedOptimizerBenchmark`, and prints a five-section report:
 
-1. **Overview** — one-row summary per strategy (total ms, regret ratio, P95/P99, convergence query)
-2. **Learning curves** — cumulative latency at queries 50/100/150/200/250/300 for all four strategies
-3. **Bao deep-dive** — arm selection counts split into early/mid/late thirds; arm diversity per
-   period as a proxy for the exploration → exploitation transition
-4. **Lero deep-dive** — pairwise comparator accuracy at queries 50/100/200/300 (trained
+1. **Overview** -- one-row summary per strategy (total ms, regret ratio, P95/P99, convergence query)
+2. **Learning curves** -- cumulative latency at queries 50/100/150/200/250/300 for all four strategies
+3. **Bao deep-dive** -- arm selection counts split into early/mid/late thirds; arm diversity per
+   period as a proxy for the exploration to exploitation transition
+4. **Lero deep-dive** -- pairwise comparator accuracy at queries 50/100/200/300 (trained
    incrementally), plus warm-up vs. warm-phase latency breakdown
-5. **Head-to-head** — per-query win/loss between Bao and Lero, agreement rate, and shared failure
+5. **Head-to-head** -- per-query win/loss between Bao and Lero, agreement rate, and shared failure
    modes (queries where both strategies underperformed the default)
 
 ```bash
@@ -1144,49 +1129,49 @@ These runs automatically when you build with Maven without skipping tests,
 - ParsingAndLogicalPlansTest contains end-to-end tests for Milestone 2 features
 - RuleEngineAndOptimizationsTest contains end-to-end tests for Milestone 3 features
 - LearnedOptimizerTest contains end-to-end tests for the AI plan selection features
-  (Phase 1–5: featurization, MLP training, Bao/Lero correctness, and benchmark invariants)
+  (Phase 1-5: featurization, MLP training, Bao/Lero correctness, and benchmark invariants)
 
 ## File Reference
 
-| File                                                       | Purpose                                          |
-|------------------------------------------------------------|--------------------------------------------------|
-| `org/query/optimizer/catalog/DataType.java`                | Supported data types (INTEGER, FLOAT, VARCHAR)   |
-| `org/query/optimizer/catalog/Schema.java`                  | Table schema with column definitions             |
-| `org/query/optimizer/catalog/ColumnStats.java`             | Simple column statistics (NDV, min/max, nulls)   |
-| `org/query/optimizer/catalog/TableMetadata.java`           | Table metadata including schema, stats, and data |
-| `org/query/optimizer/catalog/Catalog.java`                 | Central metadata registry with CSV loading       |
-| `org/query/optimizer/logical/LogicalNode.java`             | Base class for logical plan nodes                |
-| `org/query/optimizer/logical/Expression.java`              | Expression trees (columns, literals, binary ops) |
-| `org/query/optimizer/physical/PhysicalNode.java`           | Base class for physical plan nodes               |
-| `org/query/optimizer/optimizer/Rule.java`                  | Interface for optimization rules                 |
-| `org/query/optimizer/optimizer/CostModel.java`             | Interface for cost estimation with config        |
-| `org/query/optimizer/executor/Iterator.java`               | Volcano-model execution interface                |
-| `org/query/optimizer/FoundationDemo.java`                  | Demonstrates all Milestone 1 features            |
-| `org/query/optimizer/FoundationTest.java`                  | End-to-end tests for Milestone 1                 |
-| `org/query/optimizer/parser/AST.java`                      | Complete AST node hierarchy                      |
-| `org/query/optimizer/parser/SQLParser.java`                | Hand-written SQL parser                          |
-| `org/query/optimizer/parser/LogicalPlanBuilder.java`       | AST → Logical plan visitor                       |
-| `org/query/optimizer/logical/LogicalScan.java`             | Table scan operator                              |
-| `org/query/optimizer/logical/LogicalFilter.java`           | Filter/selection operator                        |
-| `org/query/optimizer/logical/LogicalProject.java`          | Projection operator                              |
-| `org/query/optimizer/logical/LogicalJoin.java`             | Join operator                                    |
-| `org/query/optimizer/logical/LogicalAggregate.java`        | Aggregation operator                             |
-| `org/query/optimizer/ParsingAndLogicalPlansDemo.java`      | Demonstrates all Milestone 2 features            |
-| `org/query/optimizer/ParsingAndLogicalPlansTest.java`      | End-to-end tests for Milestone 2                 |
-| `org/query/optimizer/RuleEngine.java`                      | Fixpoint iteration engine                        |
-| `org/query/optimizer/rules/PredicatePushdown.java`         | Push filters below joins                         |
-| `org/query/optimizer/rules/ProjectionPushdown.java`        | Push projections below filters                   |
-| `org/query/optimizer/rules/FilterMerge.java`               | Merge consecutive filters                        |
-| `org/query/optimizer/SimpleCostModel.java`                 | Cost estimation implementation                   |
-| `org/query/optimizer/CardinalityEstimator.java`            | Row count estimation                             |
-| `org/query/optimizer/RuleEngineAndOptimizationsDemo.java`  | Demonstrates all Milestone 3 features            |
-| `org/query/optimizer/RuleEngineAndOptimizationsTest.java`  | End-to-end tests for Milestone 3                 |
+| File                                                                     | Purpose                                              |
+|--------------------------------------------------------------------------|------------------------------------------------------|
+| `org/query/optimizer/catalog/DataType.java`                              | Supported data types (INTEGER, FLOAT, VARCHAR)       |
+| `org/query/optimizer/catalog/Schema.java`                                | Table schema with column definitions                 |
+| `org/query/optimizer/catalog/ColumnStats.java`                           | Simple column statistics (NDV, min/max, nulls)       |
+| `org/query/optimizer/catalog/TableMetadata.java`                         | Table metadata including schema, stats, and data     |
+| `org/query/optimizer/catalog/Catalog.java`                               | Central metadata registry with CSV loading           |
+| `org/query/optimizer/logical/LogicalNode.java`                           | Base class for logical plan nodes                    |
+| `org/query/optimizer/logical/Expression.java`                            | Expression trees (columns, literals, binary ops)     |
+| `org/query/optimizer/physical/PhysicalNode.java`                         | Base class for physical plan nodes                   |
+| `org/query/optimizer/optimizer/Rule.java`                                | Interface for optimization rules                     |
+| `org/query/optimizer/optimizer/CostModel.java`                           | Interface for cost estimation with config            |
+| `org/query/optimizer/executor/Iterator.java`                             | Volcano-model execution interface                    |
+| `org/query/optimizer/FoundationDemo.java`                                | Demonstrates all Milestone 1 features                |
+| `org/query/optimizer/FoundationTest.java`                                | End-to-end tests for Milestone 1                     |
+| `org/query/optimizer/parser/AST.java`                                    | Complete AST node hierarchy                          |
+| `org/query/optimizer/parser/SQLParser.java`                              | Hand-written SQL parser                              |
+| `org/query/optimizer/parser/LogicalPlanBuilder.java`                     | AST to logical plan visitor                          |
+| `org/query/optimizer/logical/LogicalScan.java`                           | Table scan operator                                  |
+| `org/query/optimizer/logical/LogicalFilter.java`                         | Filter/selection operator                            |
+| `org/query/optimizer/logical/LogicalProject.java`                        | Projection operator                                  |
+| `org/query/optimizer/logical/LogicalJoin.java`                           | Join operator                                        |
+| `org/query/optimizer/logical/LogicalAggregate.java`                      | Aggregation operator                                 |
+| `org/query/optimizer/ParsingAndLogicalPlansDemo.java`                    | Demonstrates all Milestone 2 features                |
+| `org/query/optimizer/ParsingAndLogicalPlansTest.java`                    | End-to-end tests for Milestone 2                     |
+| `org/query/optimizer/RuleEngine.java`                                    | Fixpoint iteration engine                            |
+| `org/query/optimizer/rules/PredicatePushdown.java`                       | Push filters below joins                             |
+| `org/query/optimizer/rules/ProjectionPushdown.java`                      | Push projections below filters                       |
+| `org/query/optimizer/rules/FilterMerge.java`                             | Merge consecutive filters                            |
+| `org/query/optimizer/SimpleCostModel.java`                               | Cost estimation implementation                       |
+| `org/query/optimizer/CardinalityEstimator.java`                          | Row count estimation                                 |
+| `org/query/optimizer/RuleEngineAndOptimizationsDemo.java`                | Demonstrates all Milestone 3 features                |
+| `org/query/optimizer/RuleEngineAndOptimizationsTest.java`                | End-to-end tests for Milestone 3                     |
 | `org/query/optimizer/physical/PhysicalScan.java`                         | Table scan operator                                  |
 | `org/query/optimizer/physical/PhysicalFilter.java`                       | Filter operator                                      |
 | `org/query/optimizer/physical/PhysicalProject.java`                      | Project operator                                     |
 | `org/query/optimizer/physical/PhysicalNestedLoopJoin.java`               | Nested loop join                                     |
 | `org/query/optimizer/physical/PhysicalHashJoin.java`                     | Hash join                                            |
-| `org/query/optimizer/physical/PhysicalPlanBuilder.java`                  | Logical→Physical conversion (configurable join pref) |
+| `org/query/optimizer/physical/PhysicalPlanBuilder.java`                  | Logical to physical conversion (configurable join pref) |
 | `org/query/optimizer/executor/Executor.java`                             | Execution engine                                     |
 | `org/query/optimizer/PhysicalExecutionDemo.java`                         | Complete demonstrations                              |
 | `org/query/optimizer/PhysicalExecutionTest.java`                         | Automated tests                                      |
@@ -1209,4 +1194,4 @@ These runs automatically when you build with Maven without skipping tests,
 | `org/query/optimizer/learned/lero/LeroDemo.java`                         | Lero demonstration with accuracy and ranking output  |
 | `org/query/optimizer/learned/benchmark/LearnedOptimizerBenchmark.java`   | Four-strategy harness (DEFAULT/ORACLE/BAO/LERO)      |
 | `org/query/optimizer/learned/benchmark/BaoVsLeroDemo.java`               | Five-section head-to-head comparative report         |
-| `org/query/optimizer/LearnedOptimizerTest.java`                          | Tests for all AI plan selection components (Phase 1–5)|
+| `org/query/optimizer/LearnedOptimizerTest.java`                          | Tests for all AI plan selection components (Phase 1-5)|
