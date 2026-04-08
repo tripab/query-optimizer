@@ -17,12 +17,14 @@ public class QueryOptimizer {
     private final LogicalPlanBuilder logicalPlanBuilder;
     private final SimpleCostModel costModel;
     private final PhysicalPlanBuilder physicalPlanBuilder;
+    private final JoinExtractor joinExtractor;
 
     public QueryOptimizer(Catalog catalog) {
         this.parser = new SQLParser();
         this.logicalPlanBuilder = new LogicalPlanBuilder(catalog);
         this.costModel = new SimpleCostModel(catalog);
         this.physicalPlanBuilder = new PhysicalPlanBuilder(catalog);
+        this.joinExtractor = new JoinExtractor();
     }
 
     public OptimizationResult optimize(String sql) {
@@ -44,6 +46,7 @@ public class QueryOptimizer {
     public LogicalNode optimizeLogical(LogicalNode logicalPlan, OptimizationOptions options) {
         RuleEngine engine = new RuleEngine(options.rules());
         LogicalNode optimized = engine.optimize(logicalPlan);
+        optimized = applyJoinReordering(optimized, options);
         annotatePlan(optimized);
         return optimized;
     }
@@ -59,5 +62,24 @@ public class QueryOptimizer {
         }
         node.setEstimatedRows(costModel.estimateCardinality(node));
         node.setEstimatedCost(costModel.estimate(node));
+    }
+
+    private LogicalNode applyJoinReordering(LogicalNode plan, OptimizationOptions options) {
+        if (options.joinOrderPolicy() != JoinOrderPolicy.DP) {
+            return plan;
+        }
+
+        JoinExtractor.JoinInfo joinInfo = joinExtractor.extract(plan);
+        if (!joinInfo.supported() || !joinInfo.hasJoinTree() || joinInfo.scans().size() < 3) {
+            return plan;
+        }
+
+        try {
+            DPJoinOrderer orderer = new DPJoinOrderer(costModel);
+            LogicalNode reorderedJoinTree = orderer.findBestJoinOrder(joinInfo.scans(), joinInfo.conditions());
+            return joinExtractor.replaceJoinSubtree(plan, joinInfo.joinRoot(), reorderedJoinTree);
+        } catch (IllegalStateException e) {
+            return plan;
+        }
     }
 }

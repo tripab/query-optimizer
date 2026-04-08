@@ -20,7 +20,7 @@ public record OptimizationOptions(
                 true,
                 true,
                 true,
-                JoinOrderPolicy.PRESERVE_INPUT,
+                JoinOrderPolicy.DP,
                 JoinAlgorithmPolicy.FORCE_HASH
         );
     }
@@ -48,7 +48,7 @@ public record OptimizationOptions(
                 hints.isPredicatePushdownEnabled(),
                 hints.isProjectionPushdownEnabled(),
                 hints.isFilterMergeEnabled(),
-                JoinOrderPolicy.PRESERVE_INPUT,
+                JoinOrderPolicy.DP,
                 hints.preferHashJoin() ? JoinAlgorithmPolicy.FORCE_HASH : JoinAlgorithmPolicy.FORCE_NLJ
         );
     }

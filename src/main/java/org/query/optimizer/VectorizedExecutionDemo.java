@@ -207,9 +207,12 @@ public class VectorizedExecutionDemo {
         System.out.println("SQL: " + sql);
         System.out.println();
 
-        LogicalNode optimised = new QueryOptimizer(catalog)
-                .optimize(sql, OptimizationOptions.defaults())
-                .optimizedLogicalPlan();
+        QueryOptimizer optimizer = new QueryOptimizer(catalog);
+        LogicalNode optimised = optimizer.optimizeLogical(
+                new org.query.optimizer.parser.LogicalPlanBuilder(catalog)
+                        .build(new org.query.optimizer.parser.SQLParser().parse(sql)),
+                OptimizationOptions.defaults()
+        );
         System.out.println("Optimised logical plan:");
         System.out.println(indent(optimised.toPrettyString(), 2));
 

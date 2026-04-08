@@ -10,13 +10,7 @@ import org.query.optimizer.catalog.Catalog;
 import org.query.optimizer.executor.Executor;
 import org.query.optimizer.executor.Executor.ExecutionResult;
 import org.query.optimizer.logical.LogicalNode;
-import org.query.optimizer.parser.LogicalPlanBuilder;
-import org.query.optimizer.parser.SQLParser;
 import org.query.optimizer.physical.PhysicalNode;
-import org.query.optimizer.physical.PhysicalPlanBuilder;
-import org.query.optimizer.rules.FilterMerge;
-import org.query.optimizer.rules.PredicatePushdown;
-import org.query.optimizer.rules.ProjectionPushdown;
 import org.query.optimizer.util.DataGenerator;
 import org.query.optimizer.vectorized.VectorizedExecutor;
 import org.query.optimizer.vectorized.VectorizedOperator;
@@ -89,9 +83,7 @@ public class VectorizedBenchmark {
 
     private Catalog catalog;
     private Path dataDir;
-
-    private final SQLParser parser = new SQLParser();
-    private LogicalPlanBuilder planBuilder;
+    private QueryOptimizer optimizer;
 
     // -------------------------------------------------------------------------
     // Benchmark SQL queries
@@ -142,7 +134,7 @@ public class VectorizedBenchmark {
         catalog.loadTableFromCSV("products", dataDir.resolve("products.csv").toString());
         catalog.loadTableFromCSV("orders", dataDir.resolve("orders.csv").toString());
 
-        planBuilder = new LogicalPlanBuilder(catalog);
+        optimizer = new QueryOptimizer(catalog);
     }
 
     /**
@@ -235,8 +227,8 @@ public class VectorizedBenchmark {
      * @return the {@link ExecutionResult} (consumed by the {@link Blackhole})
      */
     private ExecutionResult runVolcano(String sql) {
-        LogicalNode logical = optimise(sql);
-        PhysicalNode physical = new PhysicalPlanBuilder(catalog).build(logical);
+        QueryOptimizer.OptimizationResult result = optimizer.optimize(sql, OptimizationOptions.defaults());
+        PhysicalNode physical = result.physicalPlan();
         return new Executor().execute(physical);
     }
 
@@ -247,22 +239,9 @@ public class VectorizedBenchmark {
      * @return the {@link ExecutionResult} (consumed by the {@link Blackhole})
      */
     private ExecutionResult runVectorized(String sql) {
-        LogicalNode logical = optimise(sql);
+        LogicalNode logical = optimizer.optimize(sql, OptimizationOptions.defaults()).optimizedLogicalPlan();
         VectorizedOperator vectorized = new VectorizedPlanBuilder(catalog).build(logical);
         return new VectorizedExecutor().execute(vectorized);
-    }
-
-    /**
-     * Parses {@code sql} and runs the standard rule-based optimiser:
-     * predicate pushdown → projection pushdown → filter merge.
-     */
-    private LogicalNode optimise(String sql) {
-        LogicalNode logical = planBuilder.build(parser.parse(sql));
-        RuleEngine engine = new RuleEngine(List.of(
-                new PredicatePushdown(),
-                new ProjectionPushdown(),
-                new FilterMerge()));
-        return engine.optimize(logical);
     }
 
     /**
