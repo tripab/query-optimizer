@@ -3,15 +3,8 @@ package org.query.optimizer;
 import org.query.optimizer.catalog.Catalog;
 import org.query.optimizer.executor.Executor;
 import org.query.optimizer.executor.Executor.ExecutionResult;
-import org.query.optimizer.executor.ExecutionMode;
 import org.query.optimizer.logical.LogicalNode;
-import org.query.optimizer.parser.LogicalPlanBuilder;
-import org.query.optimizer.parser.SQLParser;
 import org.query.optimizer.physical.PhysicalNode;
-import org.query.optimizer.physical.PhysicalPlanBuilder;
-import org.query.optimizer.rules.FilterMerge;
-import org.query.optimizer.rules.PredicatePushdown;
-import org.query.optimizer.rules.ProjectionPushdown;
 import org.query.optimizer.util.DataGenerator;
 import org.query.optimizer.vectorized.VectorizedExecutor;
 import org.query.optimizer.vectorized.VectorizedOperator;
@@ -162,12 +155,15 @@ public class VectorizedExecutionDemo {
         System.out.println();
 
         // ---- Parse & optimise (shared) -----------------------------------
-        LogicalNode optimised = parseAndOptimise(sql, catalog);
+        LogicalNode optimised = new QueryOptimizer(catalog)
+                .optimize(sql, OptimizationOptions.defaults())
+                .optimizedLogicalPlan();
         System.out.println("Optimised logical plan:");
         System.out.println(indent(optimised.toPrettyString(), 2));
 
         // ---- Volcano -----------------------------------------------------
-        PhysicalNode volcanoplan = new PhysicalPlanBuilder(catalog).build(optimised);
+        PhysicalNode volcanoplan = new QueryOptimizer(catalog)
+                .buildPhysicalPlan(optimised, OptimizationOptions.defaults());
         System.out.println("Volcano physical plan:");
         System.out.println(indent(volcanoplan.toPrettyString(), 2));
 
@@ -211,7 +207,9 @@ public class VectorizedExecutionDemo {
         System.out.println("SQL: " + sql);
         System.out.println();
 
-        LogicalNode optimised = parseAndOptimise(sql, catalog);
+        LogicalNode optimised = new QueryOptimizer(catalog)
+                .optimize(sql, OptimizationOptions.defaults())
+                .optimizedLogicalPlan();
         System.out.println("Optimised logical plan:");
         System.out.println(indent(optimised.toPrettyString(), 2));
 
@@ -225,20 +223,6 @@ public class VectorizedExecutionDemo {
         System.out.printf("%n  Vectorized : %d row(s) in %d ms%n",
                 result.getResultCount(), result.executionTimeMs());
         System.out.println("  Volcano    : not yet implemented (excluded from summary)");
-    }
-
-    // -----------------------------------------------------------------------
-    // Parse + rule-based optimisation (shared pipeline)
-    // -----------------------------------------------------------------------
-
-    private static LogicalNode parseAndOptimise(String sql, Catalog catalog) {
-        LogicalNode logical = new LogicalPlanBuilder(catalog)
-                .build(new SQLParser().parse(sql));
-        return new RuleEngine(List.of(
-                new PredicatePushdown(),
-                new ProjectionPushdown(),
-                new FilterMerge()))
-                .optimize(logical);
     }
 
     // -----------------------------------------------------------------------

@@ -1,11 +1,11 @@
 package org.query.optimizer.learned.common;
 
-import org.query.optimizer.RuleEngine;
-import org.query.optimizer.SimpleCostModel;
 import org.query.optimizer.catalog.Catalog;
+import org.query.optimizer.OptimizationOptions;
+import org.query.optimizer.QueryOptimizer;
+import org.query.optimizer.SimpleCostModel;
 import org.query.optimizer.logical.LogicalNode;
 import org.query.optimizer.physical.PhysicalNode;
-import org.query.optimizer.physical.PhysicalPlanBuilder;
 
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -44,14 +44,10 @@ import java.util.Map;
  */
 public class PlanVariantGenerator {
 
-    private final Catalog          catalog;
-    private final SimpleCostModel  costModel;
-    private final PhysicalPlanBuilder planBuilder;
+    private final QueryOptimizer optimizer;
 
     public PlanVariantGenerator(Catalog catalog, SimpleCostModel costModel) {
-        this.catalog      = catalog;
-        this.costModel    = costModel;
-        this.planBuilder  = new PhysicalPlanBuilder(catalog);
+        this.optimizer = new QueryOptimizer(catalog);
     }
 
     /**
@@ -74,17 +70,13 @@ public class PlanVariantGenerator {
         java.util.Set<String>      seenSigs      = new java.util.HashSet<>();
 
         for (HintSet hints : hintSets) {
-
-            // 1. Optimize with this hint set's rule configuration
-            RuleEngine    engine    = new RuleEngine(hints.getRules());
-            LogicalNode   optimized = engine.optimize(logicalPlan);
-
-            // 2. Annotate with costs so featurization can read est_rows / est_cost
-            annotateCosts(optimized);
-
-            // 3. Build physical plan with the hint set's join preference
-            planBuilder.setPreferHashJoin(hints.preferHashJoin());
-            PhysicalNode physical = planBuilder.build(optimized);
+            QueryOptimizer.OptimizationResult result = optimizer.optimize(
+                    null,
+                    logicalPlan,
+                    OptimizationOptions.fromHintSet(hints)
+            );
+            LogicalNode optimized = result.optimizedLogicalPlan();
+            PhysicalNode physical = result.physicalPlan();
 
             // 4. Deduplicate
             String sig = computeSignature(physical);
@@ -95,24 +87,6 @@ public class PlanVariantGenerator {
 
         return variants;
     }
-
-    // -------------------------------------------------------------------------
-    // Cost annotation
-    // -------------------------------------------------------------------------
-
-    /**
-     * Recursively annotates each node in the logical plan tree with its
-     * estimated row count and cumulative cost using the shared cost model.
-     * Post-order so children are annotated before their parents.
-     */
-    private void annotateCosts(LogicalNode node) {
-        for (LogicalNode child : node.getChildren()) {
-            annotateCosts(child);
-        }
-        node.setEstimatedRows(costModel.estimateCardinality(node));
-        node.setEstimatedCost(costModel.estimate(node));
-    }
-
     // -------------------------------------------------------------------------
     // Signature computation
     // -------------------------------------------------------------------------

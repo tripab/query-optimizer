@@ -1,7 +1,6 @@
 package org.query.optimizer;
 
 import org.query.optimizer.catalog.Catalog;
-import org.query.optimizer.catalog.CostModel;
 import org.query.optimizer.executor.Executor;
 import org.query.optimizer.logical.LogicalNode;
 import org.query.optimizer.parser.AST;
@@ -9,8 +8,6 @@ import org.query.optimizer.parser.LogicalPlanBuilder;
 import org.query.optimizer.parser.SQLParser;
 import org.query.optimizer.physical.PhysicalNode;
 import org.query.optimizer.physical.PhysicalPlanBuilder;
-import org.query.optimizer.rules.FilterMerge;
-import org.query.optimizer.rules.PredicatePushdown;
 
 import java.io.File;
 import java.io.IOException;
@@ -110,22 +107,19 @@ public class PhysicalExecutionDemo {
     }
 
     private static PhysicalNode getPhysicalNode(Catalog catalog, AST.SelectStmt ast) {
-        LogicalPlanBuilder logicalBuilder = new LogicalPlanBuilder(catalog);
-        LogicalNode logicalPlan = logicalBuilder.build(ast);
-
-        // Optimize
-        CostModel costModel = new SimpleCostModel(catalog);
-        List<Rule> rules = Arrays.asList(
-                new PredicatePushdown(),
-                new FilterMerge()
-        );
-        RuleEngine optimizer = new RuleEngine(rules);
-        LogicalNode optimizedPlan = optimizer.optimize(logicalPlan);
-
-        // Convert to physical plan
-        PhysicalPlanBuilder physicalBuilder = new PhysicalPlanBuilder(catalog);
-        PhysicalNode physicalPlan = physicalBuilder.build(optimizedPlan);
-        return physicalPlan;
+        QueryOptimizer optimizer = new QueryOptimizer(catalog);
+        LogicalNode logicalPlan = new org.query.optimizer.parser.LogicalPlanBuilder(catalog).build(ast);
+        return optimizer.optimize(
+                ast,
+                logicalPlan,
+                new OptimizationOptions(
+                        true,
+                        false,
+                        true,
+                        JoinOrderPolicy.PRESERVE_INPUT,
+                        JoinAlgorithmPolicy.FORCE_HASH
+                )
+        ).physicalPlan();
     }
 
     private static void compareJoinAlgorithms(Catalog catalog) {
@@ -143,8 +137,17 @@ public class PhysicalExecutionDemo {
 
         // Test 1: Hash Join
         System.out.println("--- Hash Join ---");
-        PhysicalPlanBuilder hashBuilder = new PhysicalPlanBuilder(catalog, true);
-        PhysicalNode hashPlan = hashBuilder.build(logicalPlan);
+        QueryOptimizer optimizer = new QueryOptimizer(catalog);
+        PhysicalNode hashPlan = optimizer.buildPhysicalPlan(
+                logicalPlan,
+                new OptimizationOptions(
+                        false,
+                        false,
+                        false,
+                        JoinOrderPolicy.PRESERVE_INPUT,
+                        JoinAlgorithmPolicy.FORCE_HASH
+                )
+        );
 
         Executor executor = new Executor();
         Executor.ExecutionResult hashResult = executor.execute(hashPlan);
@@ -155,8 +158,16 @@ public class PhysicalExecutionDemo {
 
         // Test 2: Nested Loop Join
         System.out.println("--- Nested Loop Join ---");
-        PhysicalPlanBuilder nlBuilder = new PhysicalPlanBuilder(catalog, false);
-        PhysicalNode nlPlan = nlBuilder.build(logicalPlan);
+        PhysicalNode nlPlan = optimizer.buildPhysicalPlan(
+                logicalPlan,
+                new OptimizationOptions(
+                        false,
+                        false,
+                        false,
+                        JoinOrderPolicy.PRESERVE_INPUT,
+                        JoinAlgorithmPolicy.FORCE_NLJ
+                )
+        );
 
         Executor.ExecutionResult nlResult = executor.execute(nlPlan);
 
@@ -190,29 +201,28 @@ public class PhysicalExecutionDemo {
         AST.SelectStmt ast = parser.parse(sql);
         System.out.println("  Parsed");
 
-        // Step 2: Logical plan
+        QueryOptimizer optimizer = new QueryOptimizer(catalog);
         System.out.println("\nStep 2: Building logical plan...");
-        LogicalPlanBuilder logicalBuilder = new LogicalPlanBuilder(catalog);
-        LogicalNode initialPlan = logicalBuilder.build(ast);
+        LogicalNode initialPlan = new org.query.optimizer.parser.LogicalPlanBuilder(catalog).build(ast);
         System.out.println("  Initial plan:");
         System.out.println(indent(initialPlan.toPrettyString(), 2));
 
         // Step 3: Optimize
         System.out.println("Step 3: Optimizing...");
-        CostModel costModel = new SimpleCostModel(catalog);
-        List<Rule> rules = Arrays.asList(
-                new PredicatePushdown(),
-                new FilterMerge()
+        OptimizationOptions options = new OptimizationOptions(
+                true,
+                false,
+                true,
+                JoinOrderPolicy.PRESERVE_INPUT,
+                JoinAlgorithmPolicy.FORCE_HASH
         );
-        RuleEngine optimizer = new RuleEngine(rules);
-        LogicalNode optimizedPlan = optimizer.optimize(initialPlan);
+        LogicalNode optimizedPlan = optimizer.optimize(ast, initialPlan, options).optimizedLogicalPlan();
         System.out.println("  Optimized plan:");
         System.out.println(indent(optimizedPlan.toPrettyString(), 2));
 
         // Step 4: Physical plan
         System.out.println("Step 4: Generating physical plan...");
-        PhysicalPlanBuilder physicalBuilder = new PhysicalPlanBuilder(catalog);
-        PhysicalNode physicalPlan = physicalBuilder.build(optimizedPlan);
+        PhysicalNode physicalPlan = optimizer.buildPhysicalPlan(optimizedPlan, options);
         System.out.println("  Physical plan:");
         System.out.println(indent(physicalPlan.toPrettyString(), 2));
 

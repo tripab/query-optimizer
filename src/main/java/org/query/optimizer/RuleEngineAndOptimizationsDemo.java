@@ -49,23 +49,14 @@ public class RuleEngineAndOptimizationsDemo {
             // Create cost model
             CostModel costModel = new SimpleCostModel(catalog);
 
-            // Create optimization rules
-            List<Rule> rules = Arrays.asList(
-                    new PredicatePushdown(),
-                    new ProjectionPushdown(),
-                    new FilterMerge()
-            );
-
-            // Create rule engine
-            RuleEngine ruleEngine = new RuleEngine(rules, 5);
-            ruleEngine.setVerbose(false); // We'll show plans manually
+            QueryOptimizer optimizer = new QueryOptimizer(catalog);
 
             // Demo Query 1: Predicate pushdown
             System.out.println("=== Query 1: Predicate Pushdown ===");
             String sql1 = "SELECT c.name, o.total FROM customers c " +
                     "INNER JOIN orders o ON c.id = o.customer_id " +
                     "WHERE c.city = 'Seattle' AND o.total > 100";
-            demonstrateOptimization(sql1, parser, planBuilder, ruleEngine, costModel);
+            demonstrateOptimization(sql1, parser, planBuilder, optimizer, costModel);
 
             // Demo Query 2: Multiple filters with pushdown
             System.out.println("\n=== Query 2: Multiple Predicate Pushdown ===");
@@ -74,7 +65,7 @@ public class RuleEngineAndOptimizationsDemo {
                     "INNER JOIN orders o ON p.id = o.product_id " +
                     "INNER JOIN customers c ON o.customer_id = c.id " +
                     "WHERE p.category = 'Electronics' AND c.city = 'Seattle'";
-            demonstrateOptimization(sql2, parser, planBuilder, ruleEngine, costModel);
+            demonstrateOptimization(sql2, parser, planBuilder, optimizer, costModel);
 
             // Demo Query 3: Cost model demonstration
             System.out.println("\n=== Query 3: Cost Model Demonstration ===");
@@ -98,7 +89,7 @@ public class RuleEngineAndOptimizationsDemo {
 
     private static void demonstrateOptimization(String sql, SQLParser parser,
                                                 LogicalPlanBuilder builder,
-                                                RuleEngine optimizer,
+                                                QueryOptimizer optimizer,
                                                 CostModel costModel) {
         System.out.println("SQL: " + sql);
         System.out.println();
@@ -117,7 +108,11 @@ public class RuleEngineAndOptimizationsDemo {
         long initialRows = initialPlan.getEstimatedRows();
 
         // Optimize
-        LogicalNode optimizedPlan = optimizer.optimize(initialPlan);
+        LogicalNode optimizedPlan = optimizer.optimize(
+                ast,
+                initialPlan,
+                OptimizationOptions.defaults()
+        ).optimizedLogicalPlan();
 
         // Add costs to optimized plan
         annotatePlanWithCosts(optimizedPlan, costModel);
