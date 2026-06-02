@@ -6,6 +6,7 @@ import org.query.optimizer.catalog.TableMetadata;
 import org.query.optimizer.logical.Expression;
 import org.query.optimizer.logical.LogicalNode;
 import org.query.optimizer.parser.*;
+import org.query.optimizer.vectorized.AggregateAccumulator;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -53,14 +54,12 @@ public class PhysicalPlanBuilder {
      * Recursively convert logical nodes to physical nodes.
      */
     private PhysicalNode convertNode(LogicalNode node) {
-        // Aggregation not implemented yet - would be next step
         return switch (node) {
             case LogicalScan logicalScan -> convertScan(logicalScan);
             case LogicalFilter logicalFilter -> convertFilter(logicalFilter);
             case LogicalProject logicalProject -> convertProject(logicalProject);
             case LogicalJoin logicalJoin -> convertJoin(logicalJoin);
-            case LogicalAggregate logicalAggregate ->
-                    throw new UnsupportedOperationException("Aggregation not yet implemented");
+            case LogicalAggregate logicalAggregate -> convertAggregate(logicalAggregate);
             default -> throw new IllegalArgumentException("Unknown logical node type: " +
                     node.getClass().getSimpleName());
         };
@@ -168,6 +167,27 @@ public class PhysicalPlanBuilder {
     }
 
     /**
+     * Convert LogicalAggregate to PhysicalAggregate.
+     */
+    private PhysicalNode convertAggregate(LogicalAggregate agg) {
+        PhysicalNode child = convertNode(agg.getChild());
+        Schema inputSchema = getOutputSchema(agg.getChild());
+
+        PhysicalAggregate physicalAgg = new PhysicalAggregate(
+                child, agg.getGroupByColumns(), agg.getAggregateOps(), inputSchema
+        );
+
+        if (agg.getEstimatedRows() > 0) {
+            physicalAgg.setEstimatedRows(agg.getEstimatedRows());
+        }
+        if (agg.getEstimatedCost() >= 0) {
+            physicalAgg.setEstimatedCost(agg.getEstimatedCost());
+        }
+
+        return physicalAgg;
+    }
+
+    /**
      * Check if join condition is an equi-join (column = column).
      */
     private boolean isEquiJoin(Expression condition) {
@@ -216,6 +236,18 @@ public class PhysicalPlanBuilder {
                 List<Schema.Column> columns = new ArrayList<>();
                 columns.addAll(leftSchema.getColumns());
                 columns.addAll(rightSchema.getColumns());
+                return new Schema(columns);
+            }
+            case LogicalAggregate agg -> {
+                Schema childSchema = getOutputSchema(agg.getChild());
+                List<Schema.Column> columns = new ArrayList<>();
+                for (String colName : agg.getGroupByColumns()) {
+                    columns.add(childSchema.getColumn(colName));
+                }
+                for (LogicalAggregate.AggregateOp op : agg.getAggregateOps()) {
+                    columns.add(new Schema.Column(op.outputColumn(),
+                            AggregateAccumulator.resultType(op, childSchema)));
+                }
                 return new Schema(columns);
             }
             default -> throw new IllegalArgumentException("Cannot determine schema for: " +

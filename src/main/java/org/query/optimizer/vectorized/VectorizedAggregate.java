@@ -287,31 +287,11 @@ public class VectorizedAggregate implements VectorizedOperator {
 
         // Aggregate output columns
         for (AggregateOp op : aggregateOps) {
-            DataType outType = inferOutputType(op, src);
+            DataType outType = AggregateAccumulator.resultType(op, src);
             cols.add(new Schema.Column(op.outputColumn(), outType));
         }
 
         return new Schema(cols);
-    }
-
-    /**
-     * Infers the output {@link DataType} for an aggregate operation.
-     *
-     * <ul>
-     *   <li>COUNT  → INTEGER</li>
-     *   <li>AVG    → FLOAT (averages are fractional even for integer input)</li>
-     *   <li>SUM / MIN / MAX → same type as the input column</li>
-     * </ul>
-     */
-    private static DataType inferOutputType(AggregateOp op, Schema inputSchema) {
-        return switch (op.function()) {
-            case COUNT -> DataType.INTEGER;
-            case AVG   -> DataType.FLOAT;
-            case SUM, MIN, MAX -> {
-                if (op.inputColumn().equals("*")) yield DataType.INTEGER;
-                yield inputSchema.getColumn(op.inputColumn()).type();
-            }
-        };
     }
 
     // -------------------------------------------------------------------------

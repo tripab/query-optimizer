@@ -1,7 +1,9 @@
 package org.query.optimizer.vectorized;
 
 import org.query.optimizer.catalog.DataType;
+import org.query.optimizer.catalog.Schema;
 import org.query.optimizer.parser.LogicalAggregate.AggFunction;
+import org.query.optimizer.parser.LogicalAggregate.AggregateOp;
 
 /**
  * Per-group, per-function accumulator used by {@link VectorizedAggregate}.
@@ -80,6 +82,33 @@ public sealed interface AggregateAccumulator
             case AVG -> new AvgAccumulator(columnType);
             case MIN -> new MinAccumulator(columnType);
             case MAX -> new MaxAccumulator(columnType);
+        };
+    }
+
+    /**
+     * Infers the output {@link DataType} produced by {@code op} given the schema of
+     * the operator feeding the aggregate.  Shared by both the vectorized and
+     * Volcano aggregate operators so that the two engines agree on result types.
+     *
+     * <ul>
+     *   <li>COUNT → INTEGER</li>
+     *   <li>AVG   → FLOAT (averages are fractional even for integer input)</li>
+     *   <li>SUM / MIN / MAX → same type as the input column
+     *       ({@code "*"} degenerates to INTEGER)</li>
+     * </ul>
+     *
+     * @param op          the aggregate operation
+     * @param inputSchema the schema of the aggregate's input
+     * @return the {@link DataType} of the aggregate's output column
+     */
+    static DataType resultType(AggregateOp op, Schema inputSchema) {
+        return switch (op.function()) {
+            case COUNT -> DataType.INTEGER;
+            case AVG -> DataType.FLOAT;
+            case SUM, MIN, MAX -> {
+                if (op.inputColumn().equals("*")) yield DataType.INTEGER;
+                yield inputSchema.getColumn(op.inputColumn()).type();
+            }
         };
     }
 
