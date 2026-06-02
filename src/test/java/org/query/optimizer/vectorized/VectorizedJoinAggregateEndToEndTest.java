@@ -39,9 +39,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * engine and the vectorized engine and asserting identical result sets (order-independent).
  * This reuses the pattern established in {@link VectorizedEndToEndTest}.
  *
- * <p>Aggregate queries cannot be compared against Volcano because
- * {@link PhysicalPlanBuilder} does not yet implement {@code LogicalAggregate}. Those tests
- * instead assert against hard-coded expected values derived by hand from the test data.
+ * <p>The aggregate tests below assert against hand-computed expected values derived
+ * from the test data, providing an independent oracle for the vectorized engine.
+ * Direct Volcano-vs-vectorized aggregate parity (now that {@link PhysicalPlanBuilder}
+ * implements {@code LogicalAggregate}) is covered separately in
+ * {@code CrossEngineAggregateParityTest}.
  *
  * <h2>Test data</h2>
  * <pre>
@@ -284,8 +286,10 @@ class VectorizedJoinAggregateEndToEndTest {
     // =========================================================================
     // AGGREGATE end-to-end tests (known expected values)
     //
-    // Note: Volcano does not implement LogicalAggregate, so these tests verify
-    // correctness against hand-computed expected values from the test data above.
+    // These verify the vectorized engine against hand-computed expected values
+    // from the test data above, serving as an independent oracle. Volcano now
+    // implements LogicalAggregate; direct cross-engine parity lives in
+    // CrossEngineAggregateParityTest.
     // =========================================================================
 
     @Test
