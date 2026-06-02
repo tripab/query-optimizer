@@ -13,14 +13,14 @@ import org.query.optimizer.vectorized.VectorizedPlanBuilder;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.List;
 
 /**
  * Interactive demo for the vectorized execution engine (Phase 5, task 5.4).
  *
  * <h2>What this demo shows</h2>
- * <p>Five query workloads are executed through <em>both</em> the classic Volcano
- * iterator model and the new vectorized engine.  After each query the demo prints:
+ * <p>Five query workloads (scan, filter, project, join, and aggregation) are
+ * executed through <em>both</em> the classic Volcano iterator model and the new
+ * vectorized engine.  After each query the demo prints:
  * <ul>
  *   <li>The optimised logical plan (shared by both engines).</li>
  *   <li>The Volcano physical plan tree.</li>
@@ -96,8 +96,7 @@ public class VectorizedExecutionDemo {
                 "Dataset: %,d customers | %,d products | %,d orders%n%n",
                 CUSTOMERS, PRODUCTS, ORDERS);
 
-            // ---- 2. Timing accumulators (queries 1-4 only; aggregation
-            //         excluded since there is no Volcano counterpart yet)
+            // ---- 2. Timing accumulators ----------------------------------
             long[] volcanoTotalMs    = {0};
             long[] vectorizedTotalMs = {0};
 
@@ -114,12 +113,13 @@ public class VectorizedExecutionDemo {
             runComparison("Query 4 - Hash Join",        SQL_JOIN,    catalog,
                           volcanoTotalMs, vectorizedTotalMs);
 
-            // Aggregation: Volcano not yet implemented -- vectorized only.
-            // Its time is intentionally excluded from the summary totals so
-            // the speedup figure remains a fair apples-to-apples comparison.
-            runAggregation("Query 5 - Aggregation (vectorized only)", SQL_AGG, catalog);
+            // Aggregation now runs on both engines (PhysicalAggregate added in
+            // Phase 2), so it is compared and included in the summary like the
+            // others.
+            runComparison("Query 5 - Aggregation",      SQL_AGG,     catalog,
+                          volcanoTotalMs, vectorizedTotalMs);
 
-            // ---- 4. Overall summary (queries 1-4 only) -------------------
+            // ---- 4. Overall summary (queries 1-5) ------------------------
             printSummary(volcanoTotalMs[0], vectorizedTotalMs[0]);
 
         } finally {
@@ -194,41 +194,6 @@ public class VectorizedExecutionDemo {
     }
 
     // -----------------------------------------------------------------------
-    // Aggregation-only runner (Volcano not yet supported)
-    // -----------------------------------------------------------------------
-
-    /**
-     * Runs {@code sql} through the vectorized engine only and prints the
-     * operator tree and results.  The elapsed time is <em>not</em> added to
-     * any summary accumulator because there is no Volcano counterpart yet.
-     */
-    private static void runAggregation(String title, String sql, Catalog catalog) {
-        printSection(title);
-        System.out.println("SQL: " + sql);
-        System.out.println();
-
-        QueryOptimizer optimizer = new QueryOptimizer(catalog);
-        LogicalNode optimised = optimizer.optimizeLogical(
-                new org.query.optimizer.parser.LogicalPlanBuilder(catalog)
-                        .build(new org.query.optimizer.parser.SQLParser().parse(sql)),
-                OptimizationOptions.defaults()
-        );
-        System.out.println("Optimised logical plan:");
-        System.out.println(indent(optimised.toPrettyString(), 2));
-
-        VectorizedOperator vecPlan = new VectorizedPlanBuilder(catalog).build(optimised);
-        System.out.println("Vectorized operator tree:");
-        System.out.println(indent(vecPlan.describe(), 2));
-
-        System.out.println("Results:");
-        ExecutionResult result = new VectorizedExecutor().executeAndPrint(vecPlan);
-
-        System.out.printf("%n  Vectorized : %d row(s) in %d ms%n",
-                result.getResultCount(), result.executionTimeMs());
-        System.out.println("  Volcano    : not yet implemented (excluded from summary)");
-    }
-
-    // -----------------------------------------------------------------------
     // Printing helpers
     // -----------------------------------------------------------------------
 
@@ -264,7 +229,7 @@ public class VectorizedExecutionDemo {
     private static void printSummary(long volcanoTotalMs, long vecTotalMs) {
         System.out.println();
         System.out.println("=".repeat(60));
-        System.out.println("  Overall timing summary (queries 1-4, Volcano vs Vectorized)");
+        System.out.println("  Overall timing summary (queries 1-5, Volcano vs Vectorized)");
         System.out.println("=".repeat(60));
         System.out.printf("  Volcano total    : %,d ms%n", volcanoTotalMs);
         System.out.printf("  Vectorized total : %,d ms%n", vecTotalMs);

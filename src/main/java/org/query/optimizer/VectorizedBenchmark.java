@@ -53,11 +53,9 @@ import java.util.concurrent.TimeUnit;
  *   java -jar target/benchmarks.jar ".*[Ss]can.*"
  * </pre>
  *
- * <h2>Aggregate benchmark — Volcano note</h2>
- * <p>The Volcano {@link PhysicalPlanBuilder} does not yet implement aggregation
- * ({@code LogicalAggregate} throws {@link UnsupportedOperationException}), so
- * only the vectorized variant is provided for that workload.  The benchmark is
- * still parameterised so the vectorized numbers can be read on their own.
+ * <p>The aggregation workload is benchmarked on both engines, mirroring the
+ * other four shapes, now that the Volcano {@link PhysicalPlanBuilder} lowers
+ * {@code LogicalAggregate} to {@code PhysicalAggregate}.
  */
 @BenchmarkMode(Mode.AverageTime)
 @OutputTimeUnit(TimeUnit.MILLISECONDS)
@@ -208,8 +206,13 @@ public class VectorizedBenchmark {
     }
 
     // -------------------------------------------------------------------------
-    // (e) Aggregation  (vectorized only — Volcano aggregate not yet implemented)
+    // (e) Aggregation  (COUNT + GROUP BY)
     // -------------------------------------------------------------------------
+
+    @Benchmark
+    public void aggregationVolcano(Blackhole bh) {
+        bh.consume(runVolcano(SQL_AGG));
+    }
 
     @Benchmark
     public void aggregationVectorized(Blackhole bh) {
