@@ -145,8 +145,8 @@ public class CardinalityEstimator {
                 && condition instanceof Expression.BinaryOp binary
                 && binary.left() instanceof Expression.ColumnRef colA
                 && binary.right() instanceof Expression.ColumnRef colB) {
-            long ndvA = resolveKeyNdv(colA, leftStats, leftRows, rightStats, rightRows);
-            long ndvB = resolveKeyNdv(colB, rightStats, rightRows, leftStats, leftRows);
+            long ndvA = sideKeyNdv(colA, join, leftStats, leftRows, rightStats, rightRows);
+            long ndvB = sideKeyNdv(colB, join, leftStats, leftRows, rightStats, rightRows);
             long denom = Math.max(1, Math.max(ndvA, ndvB));
             rows = Math.max(1, (leftRows * rightRows) / denom);
 
@@ -249,20 +249,41 @@ public class CardinalityEstimator {
     }
 
     /**
-     * Resolves the NDV of a join-key column reference, preferring the side it
-     * belongs to and falling back to that side's row count (assume distinct) when
-     * the column has no tracked estimate.
+     * Resolves the NDV of a join-key column reference by first determining which
+     * side of the join the column belongs to, then looking up its (unqualified)
+     * name in that side's statistics. Using the table qualifier to pick the side
+     * is what disambiguates columns that share a name across the two inputs (e.g.
+     * both inputs having an {@code id} column). Falls back to the side's row count
+     * (assume distinct) when the column has no tracked estimate.
      */
-    private long resolveKeyNdv(Expression.ColumnRef ref,
-                               SubtreeStatistics primary, long primaryRows,
-                               SubtreeStatistics secondary, long secondaryRows) {
-        if (primary.hasColumn(ref.columnName())) {
-            return primary.ndvOf(ref.columnName(), primaryRows);
+    private long sideKeyNdv(Expression.ColumnRef ref, LogicalJoin join,
+                            SubtreeStatistics leftStats, long leftRows,
+                            SubtreeStatistics rightStats, long rightRows) {
+        boolean onLeft;
+        if (ref.tableName() != null) {
+            onLeft = subtreeContainsTable(join.getLeft(), ref.tableName());
+        } else {
+            // Unqualified reference: prefer the side that actually tracks the column.
+            onLeft = leftStats.hasColumn(ref.columnName());
         }
-        if (secondary.hasColumn(ref.columnName())) {
-            return secondary.ndvOf(ref.columnName(), secondaryRows);
+        SubtreeStatistics side = onLeft ? leftStats : rightStats;
+        long sideRows = onLeft ? leftRows : rightRows;
+        return side.ndvOf(ref.columnName(), sideRows);
+    }
+
+    /**
+     * Returns whether {@code subtree} scans a table named {@code tableName}.
+     */
+    private boolean subtreeContainsTable(LogicalNode subtree, String tableName) {
+        if (subtree instanceof LogicalScan scan) {
+            return scan.getTableName().equalsIgnoreCase(tableName);
         }
-        return primaryRows;
+        for (LogicalNode child : subtree.getChildren()) {
+            if (subtreeContainsTable(child, tableName)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
