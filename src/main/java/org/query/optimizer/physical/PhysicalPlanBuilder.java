@@ -1,5 +1,7 @@
 package org.query.optimizer.physical;
 
+import org.query.optimizer.JoinAlgorithmPolicy;
+import org.query.optimizer.PhysicalCostEstimator;
 import org.query.optimizer.catalog.Catalog;
 import org.query.optimizer.catalog.Schema;
 import org.query.optimizer.catalog.TableMetadata;
@@ -15,39 +17,60 @@ import java.util.List;
  * Converts optimized logical plans to executable physical plans.
  * <p>
  * Makes decisions about:
- * - Which join algorithm to use (nested loop vs hash)
+ * - Which join algorithm to use (nested loop vs hash), per the {@link JoinAlgorithmPolicy}
  * - Physical operator implementations
  * - Schema propagation
+ * <p>
+ * Row estimates are copied down from the (already annotated) logical plan, while
+ * each physical node's cost is (re)computed by {@link PhysicalCostEstimator} in a
+ * final pass — keeping logical cardinality estimation separate from physical
+ * operator costing.
  */
 public class PhysicalPlanBuilder {
     private final Catalog catalog;
-    private boolean preferHashJoin;
+    private final PhysicalCostEstimator costEstimator = new PhysicalCostEstimator();
+    private JoinAlgorithmPolicy joinAlgorithmPolicy;
 
     public PhysicalPlanBuilder(Catalog catalog) {
-        this(catalog, true); // Prefer hash join by default
+        this(catalog, JoinAlgorithmPolicy.FORCE_HASH); // prefer hash join by default
     }
 
     public PhysicalPlanBuilder(Catalog catalog, boolean preferHashJoin) {
+        this(catalog, preferHashJoin ? JoinAlgorithmPolicy.FORCE_HASH : JoinAlgorithmPolicy.FORCE_NLJ);
+    }
+
+    public PhysicalPlanBuilder(Catalog catalog, JoinAlgorithmPolicy joinAlgorithmPolicy) {
         this.catalog = catalog;
-        this.preferHashJoin = preferHashJoin;
+        this.joinAlgorithmPolicy = joinAlgorithmPolicy;
     }
 
     /**
      * Sets whether equi-joins should prefer hash join over nested-loop join.
-     * Allows the same builder instance to be reused with different hint sets.
+     * Convenience wrapper that maps to {@link JoinAlgorithmPolicy#FORCE_HASH} /
+     * {@link JoinAlgorithmPolicy#FORCE_NLJ}.
      *
-     * @param preferHashJoin {@code true} to use hash join for equi-joins (default),
+     * @param preferHashJoin {@code true} to force hash join for equi-joins,
      *                       {@code false} to force nested-loop join
      */
     public void setPreferHashJoin(boolean preferHashJoin) {
-        this.preferHashJoin = preferHashJoin;
+        this.joinAlgorithmPolicy = preferHashJoin
+                ? JoinAlgorithmPolicy.FORCE_HASH : JoinAlgorithmPolicy.FORCE_NLJ;
     }
 
     /**
-     * Convert logical plan to physical plan.
+     * Sets the join-algorithm selection policy used for equi-joins.
+     */
+    public void setJoinAlgorithmPolicy(JoinAlgorithmPolicy joinAlgorithmPolicy) {
+        this.joinAlgorithmPolicy = joinAlgorithmPolicy;
+    }
+
+    /**
+     * Convert logical plan to physical plan, then annotate it with physical costs.
      */
     public PhysicalNode build(LogicalNode logicalPlan) {
-        return convertNode(logicalPlan);
+        PhysicalNode physical = convertNode(logicalPlan);
+        costEstimator.annotateCosts(physical);
+        return physical;
     }
 
     /**
@@ -71,12 +94,9 @@ public class PhysicalPlanBuilder {
     private PhysicalNode convertScan(LogicalScan scan) {
         PhysicalScan physicalScan = new PhysicalScan(scan.getTableName(), catalog);
 
-        // Copy annotations from logical plan
+        // Copy the logical row estimate down; physical cost is annotated later.
         if (scan.getEstimatedRows() > 0) {
             physicalScan.setEstimatedRows(scan.getEstimatedRows());
-        }
-        if (scan.getEstimatedCost() >= 0) {
-            physicalScan.setEstimatedCost(scan.getEstimatedCost());
         }
 
         return physicalScan;
@@ -93,12 +113,8 @@ public class PhysicalPlanBuilder {
                 filter.getPredicate(), child, schema
         );
 
-        // Copy annotations
         if (filter.getEstimatedRows() > 0) {
             physicalFilter.setEstimatedRows(filter.getEstimatedRows());
-        }
-        if (filter.getEstimatedCost() >= 0) {
-            physicalFilter.setEstimatedCost(filter.getEstimatedCost());
         }
 
         return physicalFilter;
@@ -118,20 +134,21 @@ public class PhysicalPlanBuilder {
                 inputSchema
         );
 
-        // Copy annotations
         if (project.getEstimatedRows() > 0) {
             physicalProject.setEstimatedRows(project.getEstimatedRows());
-        }
-        if (project.getEstimatedCost() >= 0) {
-            physicalProject.setEstimatedCost(project.getEstimatedCost());
         }
 
         return physicalProject;
     }
 
     /**
-     * Convert LogicalJoin to PhysicalJoin.
-     * Decides between nested loop and hash join based on cost.
+     * Convert LogicalJoin to a physical join, choosing the algorithm per the
+     * configured {@link JoinAlgorithmPolicy}.
+     * <p>
+     * Non-equi joins are always nested-loop (hash join needs an equi-key). For
+     * equi-joins: {@code FORCE_HASH} and {@code FORCE_NLJ} pick that algorithm
+     * directly, while {@code COST_BASED} builds both candidates and keeps the one
+     * the {@link PhysicalCostEstimator} prices lower (ties go to hash).
      */
     private PhysicalNode convertJoin(LogicalJoin join) {
         PhysicalNode left = convertNode(join.getLeft());
@@ -140,30 +157,43 @@ public class PhysicalPlanBuilder {
         Schema leftSchema = getOutputSchema(join.getLeft());
         Schema rightSchema = getOutputSchema(join.getRight());
 
-        PhysicalNode physicalJoin;
+        PhysicalNode physicalJoin =
+                chooseJoinAlgorithm(join, left, right, leftSchema, rightSchema);
 
-        // Decision: Hash join or nested loop?
-        if (preferHashJoin && isEquiJoin(join.getCondition())) {
-            // Use hash join for equi-joins
-            physicalJoin = new PhysicalHashJoin(
-                    left, right, join.getCondition(), leftSchema, rightSchema
-            );
-        } else {
-            // Use nested loop join for non-equi joins or when specified
-            physicalJoin = new PhysicalNestedLoopJoin(
-                    left, right, join.getCondition(), leftSchema, rightSchema
-            );
-        }
-
-        // Copy annotations
+        // Carry the logical row estimate; physical cost is annotated in build().
         if (join.getEstimatedRows() > 0) {
             physicalJoin.setEstimatedRows(join.getEstimatedRows());
         }
-        if (join.getEstimatedCost() >= 0) {
-            physicalJoin.setEstimatedCost(join.getEstimatedCost());
-        }
 
         return physicalJoin;
+    }
+
+    /**
+     * Picks the physical join operator for {@code join} according to the policy.
+     */
+    private PhysicalNode chooseJoinAlgorithm(LogicalJoin join,
+                                             PhysicalNode left, PhysicalNode right,
+                                             Schema leftSchema, Schema rightSchema) {
+        Expression condition = join.getCondition();
+
+        // Hash join requires an equi-join key; otherwise we must use nested-loop.
+        if (!isEquiJoin(condition)) {
+            return new PhysicalNestedLoopJoin(left, right, condition, leftSchema, rightSchema);
+        }
+
+        return switch (joinAlgorithmPolicy) {
+            case FORCE_NLJ ->
+                    new PhysicalNestedLoopJoin(left, right, condition, leftSchema, rightSchema);
+            case FORCE_HASH ->
+                    new PhysicalHashJoin(left, right, condition, leftSchema, rightSchema);
+            case COST_BASED -> {
+                double hashCost = costEstimator.hashJoinCost(left, right);
+                double nljCost = costEstimator.nestedLoopJoinCost(left, right);
+                yield (hashCost <= nljCost)
+                        ? new PhysicalHashJoin(left, right, condition, leftSchema, rightSchema)
+                        : new PhysicalNestedLoopJoin(left, right, condition, leftSchema, rightSchema);
+            }
+        };
     }
 
     /**
@@ -179,9 +209,6 @@ public class PhysicalPlanBuilder {
 
         if (agg.getEstimatedRows() > 0) {
             physicalAgg.setEstimatedRows(agg.getEstimatedRows());
-        }
-        if (agg.getEstimatedCost() >= 0) {
-            physicalAgg.setEstimatedCost(agg.getEstimatedCost());
         }
 
         return physicalAgg;

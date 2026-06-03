@@ -52,7 +52,7 @@ public class QueryOptimizer {
     }
 
     public PhysicalNode buildPhysicalPlan(LogicalNode logicalPlan, OptimizationOptions options) {
-        physicalPlanBuilder.setPreferHashJoin(options.preferHashJoin());
+        physicalPlanBuilder.setJoinAlgorithmPolicy(options.joinAlgorithmPolicy());
         return physicalPlanBuilder.build(logicalPlan);
     }
 
