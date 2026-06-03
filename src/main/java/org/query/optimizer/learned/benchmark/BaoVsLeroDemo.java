@@ -1,5 +1,9 @@
 package org.query.optimizer.learned.benchmark;
 
+import org.query.optimizer.JoinAlgorithmPolicy;
+import org.query.optimizer.JoinOrderPolicy;
+import org.query.optimizer.OptimizationOptions;
+import org.query.optimizer.QueryOptimizer;
 import org.query.optimizer.catalog.Catalog;
 import org.query.optimizer.learned.benchmark.LearnedOptimizerBenchmark.BenchmarkResults;
 import org.query.optimizer.learned.benchmark.LearnedOptimizerBenchmark.QueryResult;
@@ -12,6 +16,8 @@ import org.query.optimizer.learned.lero.LeroOptimizer;
 import org.query.optimizer.learned.lero.PairwiseComparator;
 import org.query.optimizer.learned.lero.PairwiseComparator.TrainingPair;
 import org.query.optimizer.learned.lero.PlanExplorer;
+import org.query.optimizer.physical.JoinAlgorithmCounts;
+import org.query.optimizer.physical.PhysicalNode;
 
 import java.util.HashMap;
 import java.util.List;
@@ -83,6 +89,54 @@ public class BaoVsLeroDemo {
         printSection3BaoDeepDive(results, workload.size());
         printSection4LeroDeepDive(catalog, workload, results);
         printSection5HeadToHead(results);
+        printSection6JoinAlgorithmMix(catalog, workload);
+    }
+
+    // =========================================================================
+    // Section 6: Cost-based join-algorithm mix
+    // =========================================================================
+
+    /**
+     * Reports how the cost-based planner distributes hash vs. nested-loop joins
+     * across the workload. Unlike the hint-forced variants the learned optimizers
+     * choose among, this re-plans each query under {@link JoinAlgorithmPolicy#COST_BASED}
+     * so the physical cost model decides the algorithm per join.
+     */
+    private static void printSection6JoinAlgorithmMix(Catalog catalog, List<ParsedQuery> workload) {
+        System.out.println("=== Section 6: Cost-Based Join-Algorithm Mix ===");
+
+        QueryOptimizer optimizer = new QueryOptimizer(catalog);
+        OptimizationOptions costBased = new OptimizationOptions(
+                true, true, true, JoinOrderPolicy.DP, JoinAlgorithmPolicy.COST_BASED);
+
+        int hashJoins = 0;
+        int nestedLoopJoins = 0;
+        int queriesWithJoins = 0;
+        int skipped = 0;
+        for (ParsedQuery q : workload) {
+            PhysicalNode plan;
+            try {
+                plan = optimizer.optimize(null, q.logicalPlan(), costBased).physicalPlan();
+            } catch (RuntimeException e) {
+                // A query whose columns don't fully resolve can't be planned; skip
+                // it for this report rather than aborting the whole section.
+                skipped++;
+                continue;
+            }
+            JoinAlgorithmCounts counts = JoinAlgorithmCounts.of(plan);
+            hashJoins += counts.hashJoins();
+            nestedLoopJoins += counts.nestedLoopJoins();
+            if (counts.totalJoins() > 0) queriesWithJoins++;
+        }
+
+        System.out.printf("  Across %d queries (%d with joins): %d hash join(s), %d nested-loop join(s)%n",
+                workload.size(), queriesWithJoins, hashJoins, nestedLoopJoins);
+        if (skipped > 0) {
+            System.out.printf("  (%d quer%s skipped: columns did not resolve under planning.)%n",
+                    skipped, skipped == 1 ? "y" : "ies");
+        }
+        System.out.println("  (Cost-based selection favours nested-loop for tiny inputs and hash for large ones.)");
+        System.out.println();
     }
 
     // =========================================================================

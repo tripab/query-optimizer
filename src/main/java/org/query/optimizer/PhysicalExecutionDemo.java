@@ -175,6 +175,25 @@ public class PhysicalExecutionDemo {
         System.out.println("Time:   " + nlResult.executionTimeMs() + " ms");
         System.out.println();
 
+        // Test 3: Cost-based selection — let the optimizer choose
+        System.out.println("--- Cost-Based Selection ---");
+        PhysicalNode costPlan = optimizer.buildPhysicalPlan(
+                logicalPlan,
+                new OptimizationOptions(
+                        false,
+                        false,
+                        false,
+                        JoinOrderPolicy.PRESERVE_INPUT,
+                        JoinAlgorithmPolicy.COST_BASED
+                )
+        );
+        org.query.optimizer.physical.JoinAlgorithmCounts chosen =
+                org.query.optimizer.physical.JoinAlgorithmCounts.of(costPlan);
+        System.out.println("Optimizer chose: " + chosen);
+        System.out.printf("Estimated physical cost — hash: %.4f, nested-loop: %.4f%n",
+                hashPlan.getEstimatedCost(), nlPlan.getEstimatedCost());
+        System.out.println();
+
         // Compare
         System.out.println("--- Comparison ---");
         System.out.println("Hash join:        " + hashResult.executionTimeMs() + " ms");

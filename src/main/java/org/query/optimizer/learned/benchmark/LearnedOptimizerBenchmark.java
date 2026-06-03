@@ -234,7 +234,8 @@ public class LearnedOptimizerBenchmark {
      * structurally different plans with the same estimated cost counted as
      * "agreement") would only slightly inflate a printed percentage, with no
      * downstream consequence. In practice the false-positive risk is negligible
-     * because {@link SimpleCostModel} is a function of the operator tree, so
+     * because a plan's estimated cost is now the physical cost annotated by the
+     * planner (a function of the operator tree and the join algorithms chosen), so
      * structurally different plans almost always receive different costs.
      */
     private double computeAgreementRate(List<ParsedQuery> workload,
