@@ -1,5 +1,6 @@
 package org.query.optimizer;
 
+import org.query.optimizer.SubtreeStatistics.ColumnEstimate;
 import org.query.optimizer.catalog.Catalog;
 import org.query.optimizer.catalog.ColumnStats;
 import org.query.optimizer.catalog.Histogram;
@@ -8,18 +9,28 @@ import org.query.optimizer.logical.Expression;
 import org.query.optimizer.logical.LogicalNode;
 import org.query.optimizer.parser.*;
 
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
 /**
  * Cardinality Estimator for logical operators.
  * <p>
- * Uses simple heuristics and statistics to estimate output row counts.
- * These estimates guide the optimizer's cost model.
+ * Estimates are produced by propagating {@link SubtreeStatistics} up the logical
+ * plan. Each operator derives the estimated row count <em>and</em> per-column
+ * distinct-value (NDV) estimates of its output from those of its children, so
+ * estimates made higher in the tree reflect the filtering and projection done
+ * below them rather than always reaching back to the original base-table
+ * statistics.
  * <p>
  * Estimation techniques:
- * - Scan: table row count
- * - Filter: input_rows * selectivity
- * - Project: same as input (projection doesn't change row count)
- * - Join: standard join cardinality formula
- * - Aggregate: estimated number of groups
+ * - Scan: base-table statistics ({@link SubtreeStatistics#forScan})
+ * - Filter: input_rows * selectivity; equality-filtered columns collapse to NDV 1,
+ *   other column NDVs are capped at the surviving row count
+ * - Project: same rows as input, keeping only surviving columns' estimates
+ * - Join: standard join cardinality formula using propagated child NDVs
+ * - Aggregate: estimated number of groups from propagated group-by NDVs
  */
 public class CardinalityEstimator {
     private final Catalog catalog;
@@ -29,92 +40,276 @@ public class CardinalityEstimator {
     }
 
     /**
-     * Estimate the output cardinality of a logical operator.
+     * Estimate the output cardinality (row count) of a logical operator.
      */
     public long estimate(LogicalNode node) {
-        return switch (node) {
-            case LogicalScan logicalScan -> estimateScan(logicalScan);
-            case LogicalFilter logicalFilter -> estimateFilter(logicalFilter);
-            case LogicalProject logicalProject -> estimateProject(logicalProject);
-            case LogicalJoin logicalJoin -> estimateJoin(logicalJoin);
-            case LogicalAggregate logicalAggregate -> estimateAggregate(logicalAggregate);
-            case null, default -> 1000; // Unknown operator - return default
+        return propagate(node).rowCount();
+    }
 
+    /**
+     * Estimate the full output statistics (row count + per-column estimates) of a
+     * logical subtree by recursively propagating statistics from its children.
+     */
+    public SubtreeStatistics propagate(LogicalNode node) {
+        return switch (node) {
+            case LogicalScan logicalScan -> propagateScan(logicalScan);
+            case LogicalFilter logicalFilter -> propagateFilter(logicalFilter);
+            case LogicalProject logicalProject -> propagateProject(logicalProject);
+            case LogicalJoin logicalJoin -> propagateJoin(logicalJoin);
+            case LogicalAggregate logicalAggregate -> propagateAggregate(logicalAggregate);
+            case null, default -> new SubtreeStatistics(1000, Map.of()); // unknown operator
         };
     }
 
+    // =========================================================================
+    // Per-operator propagation
+    // =========================================================================
+
     /**
-     * Scan cardinality = table row count
+     * Scan statistics come straight from the base table.
      */
-    private long estimateScan(LogicalScan scan) {
+    private SubtreeStatistics propagateScan(LogicalScan scan) {
         TableMetadata table = catalog.getTableMetadata(scan.getTableName());
-        return table.getRowCount();
+        return SubtreeStatistics.forScan(table);
     }
 
     /**
-     * Filter cardinality = input_rows * selectivity
+     * Filter keeps {@code input_rows * selectivity} rows. Column NDVs are adjusted
+     * conservatively: a column constrained by an equality predicate collapses to a
+     * single distinct value, while every other column's NDV is capped at the
+     * surviving row count (it cannot have more distinct values than rows).
      */
-    private long estimateFilter(LogicalFilter filter) {
-        long inputRows = estimate(filter.getChild());
+    private SubtreeStatistics propagateFilter(LogicalFilter filter) {
+        SubtreeStatistics childStats = propagate(filter.getChild());
         double selectivity = estimateSelectivity(filter.getPredicate(), filter.getChild());
 
-        return Math.max(1, (long) (inputRows * selectivity));
+        // Preserve the historical row formula exactly (truncating cast, floored at 1).
+        long rows = Math.max(1, (long) (childStats.rowCount() * selectivity));
+
+        Map<String, Object> equalityConstants = collectEqualityConstants(filter.getPredicate());
+
+        Map<String, ColumnEstimate> columns = new LinkedHashMap<>();
+        for (Map.Entry<String, ColumnEstimate> entry : childStats.columnEstimates().entrySet()) {
+            String name = entry.getKey();
+            ColumnEstimate est = entry.getValue();
+            if (equalityConstants.containsKey(name)) {
+                Object constant = equalityConstants.get(name);
+                columns.put(name, new ColumnEstimate(1, constant, constant));
+            } else {
+                columns.put(name, capNdv(est, rows));
+            }
+        }
+        return new SubtreeStatistics(rows, columns);
     }
 
     /**
-     * Project doesn't change row count
+     * Projection does not change the row count; it keeps the estimates for the
+     * columns that survive in its output.
      */
-    private long estimateProject(LogicalProject project) {
-        return estimate(project.getChild());
+    private SubtreeStatistics propagateProject(LogicalProject project) {
+        SubtreeStatistics childStats = propagate(project.getChild());
+
+        Map<String, ColumnEstimate> columns = new LinkedHashMap<>();
+        for (String columnName : project.getColumnNames()) {
+            ColumnEstimate est = childStats.columnEstimate(columnName);
+            if (est != null) {
+                columns.put(columnName.toLowerCase(), est);
+            }
+        }
+        return new SubtreeStatistics(childStats.rowCount(), columns);
     }
 
     /**
      * Join cardinality estimation.
      * <p>
-     * For equality join on columns c1, c2:
+     * For an equality join on columns c1, c2:
      * cardinality = (|R| * |S|) / max(NDV(c1), NDV(c2))
      * <p>
-     * This assumes uniform distribution and independence.
-     * For non-equality joins, use Cartesian product estimate.
+     * The NDVs are taken from the propagated child statistics, so a filter or
+     * projection beneath the join reduces the estimate. For non-equality joins,
+     * a 10% selectivity fallback is used.
      */
-    private long estimateJoin(LogicalJoin join) {
-        long leftRows = estimate(join.getLeft());
-        long rightRows = estimate(join.getRight());
+    private SubtreeStatistics propagateJoin(LogicalJoin join) {
+        SubtreeStatistics leftStats = propagate(join.getLeft());
+        SubtreeStatistics rightStats = propagate(join.getRight());
+        long leftRows = leftStats.rowCount();
+        long rightRows = rightStats.rowCount();
 
-        // Analyze join condition
         Expression condition = join.getCondition();
-        if (isEqualityJoin(condition)) {
-            // Extract column NDVs
-            long ndv = estimateJoinNDV(condition, join.getLeft(), join.getRight());
-            if (ndv > 0) {
-                // Standard join cardinality formula
-                return Math.max(1, (leftRows * rightRows) / ndv);
-            }
+        long rows;
+        String leftKeyName = null;
+        String rightKeyName = null;
+        long joinKeyNdv = -1;
+
+        if (isEqualityJoin(condition)
+                && condition instanceof Expression.BinaryOp binary
+                && binary.left() instanceof Expression.ColumnRef colA
+                && binary.right() instanceof Expression.ColumnRef colB) {
+            long ndvA = resolveKeyNdv(colA, leftStats, leftRows, rightStats, rightRows);
+            long ndvB = resolveKeyNdv(colB, rightStats, rightRows, leftStats, leftRows);
+            long denom = Math.max(1, Math.max(ndvA, ndvB));
+            rows = Math.max(1, (leftRows * rightRows) / denom);
+
+            leftKeyName = colA.columnName().toLowerCase();
+            rightKeyName = colB.columnName().toLowerCase();
+            joinKeyNdv = Math.min(Math.min(ndvA, ndvB), rows);
+        } else {
+            // Non-equality join: fall back to 10% selectivity (Cartesian * 0.1)
+            rows = Math.max(1, (long) (leftRows * rightRows * 0.1));
         }
 
-        // Fallback: assume 10% selectivity for join
-        return Math.max(1, (long) (leftRows * rightRows * 0.1));
+        // Output columns: union of both sides, NDV capped at the join's row count.
+        Map<String, ColumnEstimate> columns = new LinkedHashMap<>();
+        for (Map.Entry<String, ColumnEstimate> e : leftStats.columnEstimates().entrySet()) {
+            columns.put(e.getKey(), capNdv(e.getValue(), rows));
+        }
+        for (Map.Entry<String, ColumnEstimate> e : rightStats.columnEstimates().entrySet()) {
+            columns.put(e.getKey(), capNdv(e.getValue(), rows));
+        }
+        // Join key columns share the surviving (intersection) distinct values.
+        if (joinKeyNdv >= 0) {
+            if (columns.containsKey(leftKeyName)) {
+                columns.put(leftKeyName, new ColumnEstimate(joinKeyNdv, null, null));
+            }
+            if (columns.containsKey(rightKeyName)) {
+                columns.put(rightKeyName, new ColumnEstimate(joinKeyNdv, null, null));
+            }
+        }
+        return new SubtreeStatistics(rows, columns);
     }
 
     /**
      * Aggregate cardinality = estimated number of groups.
      * <p>
-     * For GROUP BY on columns c1, c2, ...:
-     * cardinality = min(input_rows, product of NDVs)
+     * For GROUP BY on columns c1, c2, ... the group count is estimated as the
+     * product of the propagated NDVs of those columns, capped at the input row
+     * count. With no GROUP BY, the aggregate produces a single row.
      */
-    private long estimateAggregate(LogicalAggregate aggregate) {
-        long inputRows = estimate(aggregate.getChild());
+    private SubtreeStatistics propagateAggregate(LogicalAggregate aggregate) {
+        SubtreeStatistics childStats = propagate(aggregate.getChild());
+        long childRows = childStats.rowCount();
+        List<String> groupBy = aggregate.getGroupByColumns();
 
-        if (aggregate.getGroupByColumns().isEmpty()) {
-            // No GROUP BY - single output row
-            return 1;
+        long groups;
+        if (groupBy.isEmpty()) {
+            groups = 1;
+        } else {
+            long product = 1;
+            for (String col : groupBy) {
+                long ndv = Math.max(1, Math.min(childStats.ndvOf(col, childRows), childRows));
+                product = cappedProduct(product, ndv, childRows);
+            }
+            groups = Math.max(1, product);
         }
 
-        // Estimate number of groups
-        // Simplified: assume number of groups = min(input_rows, 10% of input)
-        // A better estimate would use NDV of GROUP BY columns
-        return Math.max(1, Math.min(inputRows, inputRows / 10));
+        Map<String, ColumnEstimate> columns = new LinkedHashMap<>();
+        // Group-by columns keep their (capped) distinct-value estimate.
+        for (String col : groupBy) {
+            ColumnEstimate childEst = childStats.columnEstimate(col);
+            long ndv = (childEst != null) ? Math.min(childEst.ndv(), groups) : groups;
+            Object min = (childEst != null) ? childEst.min() : null;
+            Object max = (childEst != null) ? childEst.max() : null;
+            columns.put(col.toLowerCase(), new ColumnEstimate(ndv, min, max));
+        }
+        // Aggregate output columns: one value per group, range unknown.
+        for (LogicalAggregate.AggregateOp op : aggregate.getAggregateOps()) {
+            columns.put(op.outputColumn().toLowerCase(), new ColumnEstimate(groups, null, null));
+        }
+        return new SubtreeStatistics(groups, columns);
     }
+
+    // =========================================================================
+    // Helpers: statistics
+    // =========================================================================
+
+    /**
+     * Caps a column estimate's NDV at {@code rows} (a column cannot have more
+     * distinct values than there are rows), preserving min/max.
+     */
+    private static ColumnEstimate capNdv(ColumnEstimate est, long rows) {
+        long capped = Math.min(est.ndv(), Math.max(0, rows));
+        if (capped == est.ndv()) {
+            return est;
+        }
+        return new ColumnEstimate(capped, est.min(), est.max());
+    }
+
+    /**
+     * Overflow-safe {@code min(cap, product * factor)} for accumulating a group
+     * count from per-column NDVs.
+     */
+    private static long cappedProduct(long product, long factor, long cap) {
+        if (factor <= 0) {
+            return product;
+        }
+        if (product > cap / factor) {
+            return cap;
+        }
+        return Math.min(cap, product * factor);
+    }
+
+    /**
+     * Resolves the NDV of a join-key column reference, preferring the side it
+     * belongs to and falling back to that side's row count (assume distinct) when
+     * the column has no tracked estimate.
+     */
+    private long resolveKeyNdv(Expression.ColumnRef ref,
+                               SubtreeStatistics primary, long primaryRows,
+                               SubtreeStatistics secondary, long secondaryRows) {
+        if (primary.hasColumn(ref.columnName())) {
+            return primary.ndvOf(ref.columnName(), primaryRows);
+        }
+        if (secondary.hasColumn(ref.columnName())) {
+            return secondary.ndvOf(ref.columnName(), secondaryRows);
+        }
+        return primaryRows;
+    }
+
+    /**
+     * Collects equality constraints ({@code column = literal}) from a predicate,
+     * recursing through AND. Column = column comparisons and other operators are
+     * ignored. Keys are lower-cased column names.
+     */
+    private Map<String, Object> collectEqualityConstants(Expression predicate) {
+        Map<String, Object> result = new HashMap<>();
+        collectEqualityConstants(predicate, result);
+        return result;
+    }
+
+    private void collectEqualityConstants(Expression predicate, Map<String, Object> out) {
+        if (!(predicate instanceof Expression.BinaryOp binary)) {
+            return;
+        }
+        switch (binary.operator()) {
+            case EQ -> {
+                Expression.ColumnRef column = null;
+                Object value = null;
+                if (binary.left() instanceof Expression.ColumnRef c
+                        && binary.right() instanceof Expression.Literal<?> lit) {
+                    column = c;
+                    value = lit.value();
+                } else if (binary.right() instanceof Expression.ColumnRef c
+                        && binary.left() instanceof Expression.Literal<?> lit) {
+                    column = c;
+                    value = lit.value();
+                }
+                if (column != null) {
+                    out.put(column.columnName().toLowerCase(), value);
+                }
+            }
+            case AND -> {
+                collectEqualityConstants(binary.left(), out);
+                collectEqualityConstants(binary.right(), out);
+            }
+            default -> {
+                // Other operators do not pin a column to a single value.
+            }
+        }
+    }
+
+    // =========================================================================
+    // Helpers: selectivity (histogram / NDV based, unchanged)
+    // =========================================================================
 
     /**
      * Estimate selectivity of a predicate.
@@ -281,51 +476,5 @@ public class CardinalityEstimator {
     private boolean isEqualityJoin(Expression condition) {
         return condition instanceof Expression.BinaryOp &&
                 ((Expression.BinaryOp) condition).operator() == Expression.BinaryOp.Operator.EQ;
-    }
-
-    /**
-     * Estimate NDV for join condition.
-     * Returns max(NDV(left_column), NDV(right_column))
-     */
-    private long estimateJoinNDV(Expression condition, LogicalNode left, LogicalNode right) {
-        if (!(condition instanceof Expression.BinaryOp binary)) {
-            return 0;
-        }
-
-        // Extract columns from both sides
-        Expression.ColumnRef leftCol = null;
-        Expression.ColumnRef rightCol = null;
-
-        if (binary.left() instanceof Expression.ColumnRef) {
-            leftCol = (Expression.ColumnRef) binary.left();
-        }
-        if (binary.right() instanceof Expression.ColumnRef) {
-            rightCol = (Expression.ColumnRef) binary.right();
-        }
-
-        if (leftCol == null || rightCol == null) {
-            return 0;
-        }
-
-        // Get NDV for both columns
-        long leftNDV = getColumnNDV(leftCol, left);
-        long rightNDV = getColumnNDV(rightCol, right);
-
-        return Math.max(leftNDV, rightNDV);
-    }
-
-    /**
-     * Get NDV for a column in a subtree.
-     */
-    private long getColumnNDV(Expression.ColumnRef column, LogicalNode node) {
-        String tableName = findTableForColumn(column, node);
-        if (tableName != null) {
-            TableMetadata table = catalog.getTableMetadata(tableName);
-            ColumnStats stats = table.getColumnStats(column.columnName());
-            if (stats != null) {
-                return stats.numDistinctValues();
-            }
-        }
-        return 1; // Unknown - conservative estimate
     }
 }

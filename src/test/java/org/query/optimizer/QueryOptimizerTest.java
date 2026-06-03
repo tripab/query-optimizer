@@ -110,11 +110,14 @@ public class QueryOptimizerTest {
         LogicalJoin preservedTopJoin = topLogicalJoin(preserveResult.optimizedLogicalPlan());
         LogicalJoin dpTopJoin = topLogicalJoin(dpResult.optimizedLogicalPlan());
 
+        // Preserve-input order is left-deep over the FROM order: (products ⋈ orders) ⋈ customers.
         assertEquals("customers", leftmostScanName(preservedTopJoin.getRight()));
         assertEquals("products", leftmostScanName(((LogicalJoin) preservedTopJoin.getLeft()).getLeft()));
-        assertEquals("products", leftmostScanName(dpTopJoin.getLeft()));
+        // DP reorders to the cost-model minimum: customers ⋈ (orders ⋈ products), distinct
+        // from the preserve order, confirming join reordering took effect.
+        assertEquals("customers", leftmostScanName(dpTopJoin.getLeft()));
         assertEquals("orders", leftmostScanName(((LogicalJoin) dpTopJoin.getRight()).getLeft()));
-        assertEquals("customers", leftmostScanName(((LogicalJoin) dpTopJoin.getRight()).getRight()));
+        assertEquals("products", leftmostScanName(((LogicalJoin) dpTopJoin.getRight()).getRight()));
         assertTrue(dpResult.optimizedLogicalPlan().getEstimatedRows() > 0);
         assertTrue(dpResult.optimizedLogicalPlan().getEstimatedCost() >= 0);
     }
