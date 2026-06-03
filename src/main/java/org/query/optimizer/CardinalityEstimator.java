@@ -31,6 +31,13 @@ import java.util.Map;
  * - Project: same rows as input, keeping only surviving columns' estimates
  * - Join: standard join cardinality formula using propagated child NDVs
  * - Aggregate: estimated number of groups from propagated group-by NDVs
+ * <p>
+ * <b>Known limitation — unqualified column keys.</b> {@link SubtreeStatistics}
+ * keys per-column estimates by unqualified name. Join-key NDV resolution
+ * disambiguates same-named columns across the two join inputs via the table
+ * qualifier (see {@link #sideKeyNdv}), but columns that share a name <em>within</em>
+ * a single subtree still collapse to one estimate. This should be addressed
+ * exhaustively later (e.g. by keying on a qualified (table, column) identity).
  */
 public class CardinalityEstimator {
     private final Catalog catalog;

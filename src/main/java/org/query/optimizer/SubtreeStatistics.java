@@ -25,6 +25,16 @@ import java.util.Set;
  *
  * <p>Instances are immutable. Column estimates are keyed case-insensitively to
  * match the rest of the catalog, which lower-cases column names.
+ *
+ * <p><b>Known limitation — unqualified column keys.</b> Columns are keyed by their
+ * <em>unqualified</em> name only, with no table qualifier. When a subtree exposes
+ * two columns that share a name (for example both inputs of a join having an
+ * {@code id} column), they collapse to a single entry and one estimate is lost.
+ * Join-key NDV resolution works around this by using the column's table qualifier
+ * to pick the correct side before looking the name up (see
+ * {@code CardinalityEstimator.sideKeyNdv}), but the general within-subtree collision
+ * remains. This should be addressed exhaustively later, most likely by keying
+ * estimates on a qualified (table, column) identity rather than a bare name.
  */
 public final class SubtreeStatistics {
 
