@@ -50,13 +50,21 @@ public class ThompsonSampler {
     public HintSet selectArm(Map<HintSet, double[]> planFeatures,
                              PlanValueModel model) {
         HintSet bestArm    = null;
-        double  bestSample = Double.MAX_VALUE;
+        double  bestSample = Double.POSITIVE_INFINITY;
 
         for (Map.Entry<HintSet, double[]> entry : planFeatures.entrySet()) {
             PlanValueModel.PredictionWithUncertainty pred = model.predict(entry.getValue());
             double sigma  = Math.sqrt(pred.variance());
             double sample = pred.mean() + random.nextGaussian() * sigma;
-            if (sample < bestSample) {
+
+            // Treat a NaN sample (e.g. a degenerate model prediction) as the worst
+            // possible so it never wins, but still bootstrap bestArm on the first
+            // entry so a non-empty map always yields a non-null arm — otherwise
+            // `NaN < bestSample` is always false and every arm is rejected.
+            if (Double.isNaN(sample)) {
+                sample = Double.POSITIVE_INFINITY;
+            }
+            if (bestArm == null || sample < bestSample) {
                 bestSample = sample;
                 bestArm    = entry.getKey();
             }
