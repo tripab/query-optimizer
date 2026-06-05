@@ -22,16 +22,24 @@ import org.query.optimizer.parser.*;
 public class SimpleCostModel implements CostModel {
     private final Catalog catalog;
     private final CostConfig costConfig;
-    private final CardinalityEstimator cardinalityEstimator;
+    private final CardinalityModel cardinalityModel;
 
     public SimpleCostModel(Catalog catalog) {
         this(catalog, new CostConfig());
     }
 
     public SimpleCostModel(Catalog catalog, CostConfig costConfig) {
+        this(catalog, costConfig, new HeuristicCardinalityModel(catalog));
+    }
+
+    public SimpleCostModel(Catalog catalog, CardinalityModel cardinalityModel) {
+        this(catalog, new CostConfig(), cardinalityModel);
+    }
+
+    public SimpleCostModel(Catalog catalog, CostConfig costConfig, CardinalityModel cardinalityModel) {
         this.catalog = catalog;
         this.costConfig = costConfig;
-        this.cardinalityEstimator = new CardinalityEstimator(catalog);
+        this.cardinalityModel = cardinalityModel;
     }
 
     @Override
@@ -123,7 +131,7 @@ public class SimpleCostModel implements CostModel {
 
     @Override
     public long estimateCardinality(LogicalNode node) {
-        return cardinalityEstimator.estimate(node);
+        return cardinalityModel.estimate(node);
     }
 
     @Override

@@ -13,18 +13,33 @@ public class QueryOptimizer {
                                      LogicalNode optimizedLogicalPlan, PhysicalNode physicalPlan) {
     }
 
+    private final Catalog catalog;
     private final SQLParser parser;
     private final LogicalPlanBuilder logicalPlanBuilder;
-    private final SimpleCostModel costModel;
     private final PhysicalPlanBuilder physicalPlanBuilder;
     private final JoinExtractor joinExtractor;
+    private final CardinalityModel heuristicModel;
+    private final CardinalityModel learnedModel; // nullable; used only when options select LEARNED
 
     public QueryOptimizer(Catalog catalog) {
+        this(catalog, null);
+    }
+
+    /**
+     * @param catalog      the catalog
+     * @param learnedModel a trained learned cardinality model to use when
+     *                     {@link OptimizationOptions#cardinalityModelType()} is
+     *                     {@code LEARNED}; may be {@code null}, in which case the
+     *                     optimizer always falls back to the heuristic model
+     */
+    public QueryOptimizer(Catalog catalog, CardinalityModel learnedModel) {
+        this.catalog = catalog;
         this.parser = new SQLParser();
         this.logicalPlanBuilder = new LogicalPlanBuilder(catalog);
-        this.costModel = new SimpleCostModel(catalog);
         this.physicalPlanBuilder = new PhysicalPlanBuilder(catalog);
         this.joinExtractor = new JoinExtractor();
+        this.heuristicModel = new HeuristicCardinalityModel(catalog);
+        this.learnedModel = learnedModel;
     }
 
     public OptimizationResult optimize(String sql) {
@@ -44,10 +59,11 @@ public class QueryOptimizer {
     }
 
     public LogicalNode optimizeLogical(LogicalNode logicalPlan, OptimizationOptions options) {
+        SimpleCostModel costModel = costModelFor(options);
         RuleEngine engine = new RuleEngine(options.rules());
         LogicalNode optimized = engine.optimize(logicalPlan);
-        optimized = applyJoinReordering(optimized, options);
-        annotatePlan(optimized);
+        optimized = applyJoinReordering(optimized, options, costModel);
+        annotatePlan(optimized, costModel);
         return optimized;
     }
 
@@ -56,15 +72,29 @@ public class QueryOptimizer {
         return physicalPlanBuilder.build(logicalPlan);
     }
 
-    private void annotatePlan(LogicalNode node) {
+    /**
+     * Selects the cardinality model for this optimization. Uses the learned model
+     * only when the options request it <em>and</em> one was supplied; otherwise
+     * falls back to the heuristic model.
+     */
+    private SimpleCostModel costModelFor(OptimizationOptions options) {
+        CardinalityModel model =
+                (options.cardinalityModelType() == CardinalityModelType.LEARNED && learnedModel != null)
+                        ? learnedModel
+                        : heuristicModel;
+        return new SimpleCostModel(catalog, model);
+    }
+
+    private void annotatePlan(LogicalNode node, SimpleCostModel costModel) {
         for (LogicalNode child : node.getChildren()) {
-            annotatePlan(child);
+            annotatePlan(child, costModel);
         }
         node.setEstimatedRows(costModel.estimateCardinality(node));
         node.setEstimatedCost(costModel.estimate(node));
     }
 
-    private LogicalNode applyJoinReordering(LogicalNode plan, OptimizationOptions options) {
+    private LogicalNode applyJoinReordering(LogicalNode plan, OptimizationOptions options,
+                                            SimpleCostModel costModel) {
         if (options.joinOrderPolicy() != JoinOrderPolicy.DP) {
             return plan;
         }

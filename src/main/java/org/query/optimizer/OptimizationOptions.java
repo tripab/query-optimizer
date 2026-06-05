@@ -13,15 +13,30 @@ public record OptimizationOptions(
         boolean enableProjectionPushdown,
         boolean enableFilterMerge,
         JoinOrderPolicy joinOrderPolicy,
-        JoinAlgorithmPolicy joinAlgorithmPolicy
+        JoinAlgorithmPolicy joinAlgorithmPolicy,
+        CardinalityModelType cardinalityModelType
 ) {
+    /**
+     * Convenience constructor that uses the heuristic cardinality model — the
+     * historical default — so existing five-argument callers are unaffected.
+     */
+    public OptimizationOptions(boolean enablePredicatePushdown,
+                               boolean enableProjectionPushdown,
+                               boolean enableFilterMerge,
+                               JoinOrderPolicy joinOrderPolicy,
+                               JoinAlgorithmPolicy joinAlgorithmPolicy) {
+        this(enablePredicatePushdown, enableProjectionPushdown, enableFilterMerge,
+                joinOrderPolicy, joinAlgorithmPolicy, CardinalityModelType.HEURISTIC);
+    }
+
     public static OptimizationOptions defaults() {
         return new OptimizationOptions(
                 true,
                 true,
                 true,
                 JoinOrderPolicy.DP,
-                JoinAlgorithmPolicy.FORCE_HASH
+                JoinAlgorithmPolicy.FORCE_HASH,
+                CardinalityModelType.HEURISTIC
         );
     }
 
