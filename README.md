@@ -5,7 +5,8 @@ production-grade system. It covers the full pipeline: a CSV-backed catalog, a ha
 physical plan trees, rule-based optimization (predicate/projection pushdown, filter merge), cost modeling with
 cardinality estimation that propagates per-column distinct-value estimates, dynamic-programming join ordering,
 histogram-based selectivity, cost calibration, cost-based join-algorithm selection, two execution engines (Volcano
-iterator and vectorized batch-at-a-time), and two AI-powered plan selection strategies (Bao and Lero).
+iterator and vectorized batch-at-a-time), two AI-powered plan selection strategies (Bao and Lero), and a learned
+neural-network cardinality estimator that the optimizer can swap in for the heuristic.
 
 All of these stages are tied together by a single orchestration entry point, `QueryOptimizer`, configured through an
 `OptimizationOptions` object — see [The Unified Optimizer Pipeline](#the-unified-optimizer-pipeline) below.
@@ -930,15 +931,18 @@ new OptimizationOptions(
     enableProjectionPushdown,  // boolean
     enableFilterMerge,         // boolean
     joinOrderPolicy,           // PRESERVE_INPUT | DP
-    joinAlgorithmPolicy);      // COST_BASED | FORCE_HASH | FORCE_NLJ
+    joinAlgorithmPolicy,       // COST_BASED | FORCE_HASH | FORCE_NLJ
+    cardinalityModelType);     // HEURISTIC | LEARNED
 
-OptimizationOptions.defaults(); // all rules on, DP join ordering, hash join
+// A five-argument convenience constructor defaults cardinalityModelType to HEURISTIC.
+OptimizationOptions.defaults(); // all rules on, DP join ordering, hash join, heuristic CE
 ```
 
 | Knob | Values | Effect |
 |---|---|---|
 | `JoinOrderPolicy` | `PRESERVE_INPUT`, `DP` | Keep the FROM order, or search for the cheapest order via dynamic programming |
 | `JoinAlgorithmPolicy` | `COST_BASED`, `FORCE_HASH`, `FORCE_NLJ` | Pick hash vs. nested-loop by physical cost, or force one |
+| `CardinalityModelType` | `HEURISTIC`, `LEARNED` | Use the heuristic estimator, or a learned model (see [Learned Cardinality Estimation](#learned-cardinality-estimation)); falls back to heuristic when no model is supplied |
 
 ### DP Join Ordering on Real Plans
 
@@ -956,6 +960,44 @@ higher in the tree reflect the filtering and projection done below them — a fi
 drops that column's NDV to 1, and a join above it uses the *reduced* NDV instead of reaching back to the original
 base-table statistics. (Estimates are keyed by unqualified column name; columns that share a name within one
 subtree are a known limitation, documented in the code.)
+
+### Learned Cardinality Estimation
+
+Cardinality estimation is pluggable. `CardinalityModel` is the seam: `HeuristicCardinalityModel` (the default) wraps
+the estimator above, while `LearnedCardinalityModel` predicts cardinality with a neural network. The optimizer
+selects between them via `OptimizationOptions.cardinalityModelType` and a learned model supplied to the
+`QueryOptimizer`:
+
+```java
+// Train a model from a workload (exact subplan cardinalities are the labels)
+CardinalityTrainingData data = new CardinalityTrainingData(catalog);
+List<CardinalityTrainingData.Example> examples = data.generate(workloadLogicalPlans);
+SimpleNeuralNetwork net = CardinalityModelTrainer.train(examples, /*epochs*/ 800, /*lr*/ 0.01, /*seed*/ 21);
+
+CardinalityModel learned = new LearnedCardinalityModel(net, data.featurizer(), new HeuristicCardinalityModel(catalog));
+
+// Hand the learned model to the optimizer; LEARNED mode then uses it.
+QueryOptimizer optimizer = new QueryOptimizer(catalog, learned);
+var options = new OptimizationOptions(true, true, true,
+        JoinOrderPolicy.DP, JoinAlgorithmPolicy.COST_BASED, CardinalityModelType.LEARNED);
+optimizer.optimize(sql, options);
+```
+
+How it works:
+
+- **Featurization** — `CardinalityFeaturizer` turns a logical subplan into a 12-element vector: base-table sizes,
+  predicate kinds, join/aggregate counts, and — crucially — the *heuristic estimate itself*. Feeding the heuristic
+  in as a feature lets the network learn a **correction** on a sensible baseline, which is what makes it data-efficient
+  on small synthetic workloads.
+- **Targets in log space** — cardinalities span orders of magnitude, so the network regresses `log(cardinality)` with
+  MSE; `estimate()` exponentiates the prediction back to a row count.
+- **Training data** — `CardinalityTrainingData` executes every supported subplan of each workload query to obtain its
+  *exact* output cardinality as the label, yielding many examples per query.
+- **Evaluation** — `QErrorStats` reports the standard scale-free q-error (`max(pred/actual, actual/pred)`); held-out
+  tests confirm the trained model generalizes to unseen queries and stays competitive with the heuristic.
+- **Fallback everywhere** — the learned model defers to the heuristic for unsupported plan shapes, a missing/untrained
+  network, or a non-finite prediction; and the optimizer defers to the heuristic when `LEARNED` is requested but no
+  model was supplied. A misbehaving or absent model therefore degrades gracefully rather than failing.
 
 ### Logical vs. Physical Costing
 
@@ -1203,19 +1245,24 @@ and use a trained model to pick the best one.
 
 #### HintSet
 
-An immutable configuration that controls which optimization rules are applied and
-whether the physical plan builder prefers hash joins or nested-loop joins.
+An immutable configuration that controls which optimization rules are applied, whether
+the physical plan builder prefers hash or nested-loop joins, and the join-order policy.
 
 ```java
-// Five predefined hint sets (the "arms" in Bao's bandit terminology)
-HintSet.DEFAULT           // all rules, hash join preferred
+// Six predefined hint sets (the "arms" in Bao's bandit terminology)
+HintSet.DEFAULT           // all rules, hash join, DP join ordering
 HintSet.FORCE_NLJ         // all rules, nested-loop join forced
 HintSet.NO_PUSHDOWN       // skip predicate/projection pushdown
 HintSet.NO_PUSHDOWN_NLJ   // skip pushdown, force NLJ
 HintSet.MINIMAL_OPT       // no optimization rules at all
+HintSet.PRESERVE_ORDER    // all rules, hash join, but keep the input join order (no DP)
 
-List<HintSet> arms = HintSet.allHintSets(); // all five
+List<HintSet> arms = HintSet.allHintSets(); // all six
 ```
+
+Join order is a bandit dimension alongside the rule and join-algorithm knobs: `PRESERVE_ORDER` lets the model learn
+when keeping the written (FROM) order beats the cost-based DP order. `OptimizationOptions.fromHintSet` maps a hint
+set's knobs — including its `JoinOrderPolicy` — onto the optimizer.
 
 #### PlanVariantGenerator
 
@@ -1230,14 +1277,20 @@ Map<HintSet, PhysicalNode> variants = gen.generateVariants(logicalPlan, HintSet.
 
 #### PlanFeaturizer
 
-Converts a physical plan tree into a fixed-length 34-element `double[]` suitable
-for neural network input. Uses BFS traversal across up to 5 operator slots (6
-features each) plus 4 global features (depth, total cost, total rows, operator count).
+Converts a physical plan tree into a fixed-length `double[]` suitable for neural
+network input. Uses BFS traversal across up to 8 operator slots (6 features each) plus
+4 global features (depth, total cost, total rows, operator count) — 52 elements in all.
+Operator types include scan, filter, project, hash/nested-loop join, **and aggregate**;
+the eight slots cover deeper plans such as a three-way join with pushed-down filters and
+an aggregate.
 
 ```java
 double[] features = new PlanFeaturizer().featurize(physicalNode);
-// features.length == PlanFeaturizer.FEATURE_DIM (34)
+// features.length == PlanFeaturizer.FEATURE_DIM (52)
 ```
+
+The Bao and Lero network input sizes derive from `PlanFeaturizer.FEATURE_DIM`, so they
+resize automatically if the featurization changes.
 
 #### WorkloadGenerator / DataGenerator
 
@@ -1264,7 +1317,8 @@ Configurable layer sizes, Xavier uniform weight initialization, ReLU hidden laye
 linear output, and online SGD. Supports save/load to plain-text files.
 
 ```java
-SimpleNeuralNetwork net = new SimpleNeuralNetwork(new int[]{34, 64, 32, 1}, 0.001);
+// Bao's value network, for example, is FEATURE_DIM (52) -> 64 -> 32 -> 1
+SimpleNeuralNetwork net = new SimpleNeuralNetwork(new int[]{PlanFeaturizer.FEATURE_DIM, 64, 32, 1}, 0.001);
 
 // Train on (features, target) pairs
 net.trainStep(planFeatures, new double[]{observedLatency}, LossFunction.mse());
@@ -1341,7 +1395,7 @@ that learns to say "plan A is faster than plan B" -- a strictly easier learning 
 #### PairwiseComparator
 
 A Siamese neural network: both plans are encoded by the same shared encoder
-(`34 -> 64 -> 32`), the resulting embeddings are concatenated with their difference
+(`FEATURE_DIM -> 64 -> 32`), the resulting embeddings are concatenated with their difference
 (`96`-dim), and a classifier (`96 -> 32 -> 1`) outputs P(plan A is faster than plan B).
 
 ```java
@@ -1451,7 +1505,11 @@ These runs automatically when you build with Maven without skipping tests,
 - ParsingAndLogicalPlansTest contains end-to-end tests for Milestone 2 features
 - RuleEngineAndOptimizationsTest contains end-to-end tests for Milestone 3 features
 - LearnedOptimizerTest contains end-to-end tests for the AI plan selection features
-  (Phase 1-5: featurization, MLP training, Bao/Lero correctness, and benchmark invariants)
+  (featurization, MLP training, Bao/Lero correctness, and benchmark invariants)
+- The `learned/cardinality` test package covers the learned cardinality estimator: training-data
+  labelling, training reducing q-error, optimizer mode selection/fallback, and held-out generalization
+- TraditionalOptimizerPipelineTest exercises the full traditional pipeline (rules → DP join ordering →
+  cost-based physical planning → execution) against a naive baseline
 
 ## File Reference
 
@@ -1465,8 +1523,8 @@ These runs automatically when you build with Maven without skipping tests,
 | `org/query/optimizer/logical/LogicalNode.java`                           | Base class for logical plan nodes                    |
 | `org/query/optimizer/logical/Expression.java`                            | Expression trees (columns, literals, binary ops)     |
 | `org/query/optimizer/physical/PhysicalNode.java`                         | Base class for physical plan nodes                   |
-| `org/query/optimizer/optimizer/Rule.java`                                | Interface for optimization rules                     |
-| `org/query/optimizer/optimizer/CostModel.java`                           | Interface for cost estimation with config            |
+| `org/query/optimizer/Rule.java`                                          | Interface for optimization rules                     |
+| `org/query/optimizer/catalog/CostModel.java`                            | Interface for cost estimation with config            |
 | `org/query/optimizer/executor/Iterator.java`                             | Volcano-model execution interface                    |
 | `org/query/optimizer/FoundationDemo.java`                                | Demonstrates all Milestone 1 features                |
 | `org/query/optimizer/FoundationTest.java`                                | End-to-end tests for Milestone 1                     |
@@ -1484,9 +1542,12 @@ These runs automatically when you build with Maven without skipping tests,
 | `org/query/optimizer/rules/PredicatePushdown.java`                       | Push filters below joins                             |
 | `org/query/optimizer/rules/ProjectionPushdown.java`                      | Push projections below filters                       |
 | `org/query/optimizer/rules/FilterMerge.java`                             | Merge consecutive filters                            |
-| `org/query/optimizer/SimpleCostModel.java`                               | Logical cost estimation implementation               |
-| `org/query/optimizer/CardinalityEstimator.java`                          | Cardinality + per-column NDV propagation             |
+| `org/query/optimizer/SimpleCostModel.java`                               | Logical cost estimation (uses a CardinalityModel)    |
+| `org/query/optimizer/CardinalityEstimator.java`                          | Heuristic cardinality + per-column NDV propagation   |
 | `org/query/optimizer/SubtreeStatistics.java`                             | Derived subtree stats (rows + per-column NDV/min/max)|
+| `org/query/optimizer/CardinalityModel.java`                              | Swappable cardinality-estimation interface           |
+| `org/query/optimizer/HeuristicCardinalityModel.java`                     | Default CardinalityModel (wraps CardinalityEstimator)|
+| `org/query/optimizer/CardinalityModelType.java`                          | HEURISTIC vs LEARNED selector for OptimizationOptions |
 | `org/query/optimizer/PhysicalCostEstimator.java`                         | Physical, algorithm-aware operator costing           |
 | `org/query/optimizer/QueryOptimizer.java`                                | Unified parse→rewrite→reorder→annotate→physical flow |
 | `org/query/optimizer/OptimizationOptions.java`                           | Optimizer configuration (rules + join policies)      |
@@ -1521,12 +1582,17 @@ These runs automatically when you build with Maven without skipping tests,
 | `org/query/optimizer/vectorized/VectorizedAggregate.java`                | Blocking aggregation with accumulate/emit phases     |
 | `org/query/optimizer/vectorized/VectorizedPlanBuilder.java`              | Logical plan to vectorized operator tree             |
 | `org/query/optimizer/vectorized/VectorizedExecutor.java`                 | Drives vectorized tree; returns ExecutionResult      |
-| `org/query/optimizer/learned/common/HintSet.java`                        | Immutable optimizer configuration with 5 presets     |
+| `org/query/optimizer/learned/common/HintSet.java`                        | Immutable optimizer configuration with 6 presets     |
 | `org/query/optimizer/learned/common/PlanVariantGenerator.java`           | Generate + deduplicate physical plan variants        |
-| `org/query/optimizer/learned/common/PlanFeaturizer.java`                 | Convert plan tree to 34-dim feature vector           |
+| `org/query/optimizer/learned/common/PlanFeaturizer.java`                 | Convert plan tree to 52-dim feature vector           |
 | `org/query/optimizer/learned/common/ExecutionFeedback.java`              | Training signal record with logicalCost()            |
 | `org/query/optimizer/learned/common/WorkloadGenerator.java`              | Random SQL workload generator (5 query shapes)       |
 | `org/query/optimizer/learned/common/DataGenerator.java`                  | Synthetic table generator (customers/orders/products)|
+| `org/query/optimizer/learned/cardinality/CardinalityFeaturizer.java`     | Logical subplan → CE feature vector (incl. heuristic)|
+| `org/query/optimizer/learned/cardinality/LearnedCardinalityModel.java`   | NN log-cardinality model with heuristic fallback     |
+| `org/query/optimizer/learned/cardinality/CardinalityTrainingData.java`   | Labels subplans with exact executed cardinalities    |
+| `org/query/optimizer/learned/cardinality/CardinalityModelTrainer.java`   | Trains the CE network (log-card regression)          |
+| `org/query/optimizer/learned/cardinality/QErrorStats.java`               | Q-error metric + aggregate evaluation harness        |
 | `org/query/optimizer/learned/nn/ActivationFunction.java`                 | ReLU and sigmoid with derivatives                    |
 | `org/query/optimizer/learned/nn/LossFunction.java`                       | MSE and BCE loss functions                           |
 | `org/query/optimizer/learned/nn/SimpleNeuralNetwork.java`                | Feedforward MLP with online SGD and save/load        |
