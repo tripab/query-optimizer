@@ -1,6 +1,7 @@
 package org.query.optimizer.learned.bao;
 
 import org.query.optimizer.learned.common.ExecutionFeedback;
+import org.query.optimizer.learned.common.PlanFeaturizer;
 import org.query.optimizer.learned.nn.LossFunction;
 import org.query.optimizer.learned.nn.SimpleNeuralNetwork;
 
@@ -36,7 +37,7 @@ public class PlanValueModel {
     static final int ENSEMBLE_SIZE    = 3;
     static final int RETRAIN_INTERVAL = 10;
 
-    private static final int[]   LAYER_SIZES    = {34, 64, 32, 1};
+    private static final int[]   LAYER_SIZES    = {PlanFeaturizer.FEATURE_DIM, 64, 32, 1};
     private static final double  LEARNING_RATE  = 0.001;
     private static final int     RETRAIN_EPOCHS = 20;
 

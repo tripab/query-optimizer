@@ -110,8 +110,13 @@ public class LearnedOptimizerTest {
         assertTrue(HintSet.DEFAULT.preferHashJoin());
         assertFalse(HintSet.FORCE_NLJ.preferHashJoin());
 
-        // The arm registry contains all five predefined hint sets
-        assertEquals(5, HintSet.allHintSets().size());
+        // Join-order policy is an additional dimension: PRESERVE_ORDER keeps input order
+        assertEquals(org.query.optimizer.JoinOrderPolicy.DP, HintSet.DEFAULT.joinOrderPolicy());
+        assertEquals(org.query.optimizer.JoinOrderPolicy.PRESERVE_INPUT,
+                HintSet.PRESERVE_ORDER.joinOrderPolicy());
+
+        // The arm registry contains all six predefined hint sets
+        assertEquals(6, HintSet.allHintSets().size());
     }
 
     @Test

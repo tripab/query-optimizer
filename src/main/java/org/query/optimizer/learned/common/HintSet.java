@@ -1,5 +1,6 @@
 package org.query.optimizer.learned.common;
 
+import org.query.optimizer.JoinOrderPolicy;
 import org.query.optimizer.Rule;
 import org.query.optimizer.rules.FilterMerge;
 import org.query.optimizer.rules.PredicatePushdown;
@@ -65,6 +66,15 @@ public final class HintSet {
     public static final HintSet MINIMAL_OPT =
             new HintSet("minimal", false, false, false, true);
 
+    /**
+     * All optimisations on, hash join, but join ordering left in the input (FROM)
+     * order rather than searched with dynamic programming. This adds join order as
+     * a bandit dimension: the model can learn when keeping the written order beats
+     * the cost-based DP order (and vice versa).
+     */
+    public static final HintSet PRESERVE_ORDER =
+            new HintSet("preserve_order", true, true, true, true, JoinOrderPolicy.PRESERVE_INPUT);
+
     // -------------------------------------------------------------------------
     // Fields
     // -------------------------------------------------------------------------
@@ -74,21 +84,34 @@ public final class HintSet {
     private final boolean enableProjectionPushdown;
     private final boolean enableFilterMerge;
     private final boolean preferHashJoin;
+    private final JoinOrderPolicy joinOrderPolicy;
 
     // -------------------------------------------------------------------------
     // Construction
     // -------------------------------------------------------------------------
 
+    /** Creates a hint set using dynamic-programming join ordering. */
     public HintSet(String  name,
                    boolean enablePredicatePushdown,
                    boolean enableProjectionPushdown,
                    boolean enableFilterMerge,
                    boolean preferHashJoin) {
+        this(name, enablePredicatePushdown, enableProjectionPushdown, enableFilterMerge,
+                preferHashJoin, JoinOrderPolicy.DP);
+    }
+
+    public HintSet(String  name,
+                   boolean enablePredicatePushdown,
+                   boolean enableProjectionPushdown,
+                   boolean enableFilterMerge,
+                   boolean preferHashJoin,
+                   JoinOrderPolicy joinOrderPolicy) {
         this.name                    = Objects.requireNonNull(name, "name");
         this.enablePredicatePushdown = enablePredicatePushdown;
         this.enableProjectionPushdown = enableProjectionPushdown;
         this.enableFilterMerge       = enableFilterMerge;
         this.preferHashJoin          = preferHashJoin;
+        this.joinOrderPolicy         = Objects.requireNonNull(joinOrderPolicy, "joinOrderPolicy");
     }
 
     // -------------------------------------------------------------------------
@@ -101,7 +124,7 @@ public final class HintSet {
      * the Bao bandit.
      */
     public static List<HintSet> allHintSets() {
-        return List.of(DEFAULT, FORCE_NLJ, NO_PUSHDOWN, NO_PUSHDOWN_NLJ, MINIMAL_OPT);
+        return List.of(DEFAULT, FORCE_NLJ, NO_PUSHDOWN, NO_PUSHDOWN_NLJ, MINIMAL_OPT, PRESERVE_ORDER);
     }
 
     // -------------------------------------------------------------------------
@@ -133,6 +156,7 @@ public final class HintSet {
     public boolean isProjectionPushdownEnabled(){ return enableProjectionPushdown; }
     public boolean isFilterMergeEnabled()       { return enableFilterMerge; }
     public boolean preferHashJoin()             { return preferHashJoin; }
+    public JoinOrderPolicy joinOrderPolicy()    { return joinOrderPolicy; }
 
     // -------------------------------------------------------------------------
     // Object overrides
@@ -146,6 +170,7 @@ public final class HintSet {
             && enableProjectionPushdown == h.enableProjectionPushdown
             && enableFilterMerge        == h.enableFilterMerge
             && preferHashJoin           == h.preferHashJoin
+            && joinOrderPolicy          == h.joinOrderPolicy
             && name.equals(h.name);
     }
 
@@ -155,17 +180,19 @@ public final class HintSet {
                 enablePredicatePushdown,
                 enableProjectionPushdown,
                 enableFilterMerge,
-                preferHashJoin);
+                preferHashJoin,
+                joinOrderPolicy);
     }
 
     @Override
     public String toString() {
         return String.format(
-                "HintSet[%s pred=%b proj=%b merge=%b hash=%b]",
+                "HintSet[%s pred=%b proj=%b merge=%b hash=%b order=%s]",
                 name,
                 enablePredicatePushdown,
                 enableProjectionPushdown,
                 enableFilterMerge,
-                preferHashJoin);
+                preferHashJoin,
+                joinOrderPolicy);
     }
 }

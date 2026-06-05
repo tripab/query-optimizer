@@ -63,7 +63,7 @@ public record OptimizationOptions(
                 hints.isPredicatePushdownEnabled(),
                 hints.isProjectionPushdownEnabled(),
                 hints.isFilterMergeEnabled(),
-                JoinOrderPolicy.DP,
+                hints.joinOrderPolicy(),
                 hints.preferHashJoin() ? JoinAlgorithmPolicy.FORCE_HASH : JoinAlgorithmPolicy.FORCE_NLJ
         );
     }

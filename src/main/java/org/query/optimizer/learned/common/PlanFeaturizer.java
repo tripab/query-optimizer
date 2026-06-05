@@ -1,5 +1,6 @@
 package org.query.optimizer.learned.common;
 
+import org.query.optimizer.physical.PhysicalAggregate;
 import org.query.optimizer.physical.PhysicalFilter;
 import org.query.optimizer.physical.PhysicalHashJoin;
 import org.query.optimizer.physical.PhysicalNestedLoopJoin;
@@ -55,8 +56,12 @@ import java.util.List;
  */
 public class PlanFeaturizer {
 
-    /** Number of operator slots encoded in the per-operator section. */
-    public static final int MAX_OPERATOR_SLOTS = 5;
+    /**
+     * Number of operator slots encoded in the per-operator section. Eight slots
+     * cover deeper plans than the three-table join the earlier five-slot encoding
+     * assumed — e.g. a three-way join with pushed-down filters and an aggregate.
+     */
+    public static final int MAX_OPERATOR_SLOTS = 8;
 
     /** Features per operator slot. */
     public static final int FEATURES_PER_SLOT  = 6;
@@ -64,9 +69,9 @@ public class PlanFeaturizer {
     /** Number of global (plan-level) features. */
     public static final int GLOBAL_FEATURES     = 4;
 
-    /** Total feature vector length: {@value}. */
+    /** Total feature vector length. */
     public static final int FEATURE_DIM =
-            MAX_OPERATOR_SLOTS * FEATURES_PER_SLOT + GLOBAL_FEATURES;  // 34
+            MAX_OPERATOR_SLOTS * FEATURES_PER_SLOT + GLOBAL_FEATURES;
 
     // Operator-type encoding constants (slot offset 0)
     private static final double TYPE_SCAN      = 1.0;
@@ -74,6 +79,7 @@ public class PlanFeaturizer {
     private static final double TYPE_PROJECT   = 3.0;
     private static final double TYPE_NLJ       = 4.0;
     private static final double TYPE_HASH_JOIN = 5.0;
+    private static final double TYPE_AGGREGATE = 6.0;
 
     // -------------------------------------------------------------------------
     // Public API
@@ -110,11 +116,12 @@ public class PlanFeaturizer {
             features[offset + 5] = node.getChildren().size();
         }
 
-        // --- Global features ---
-        features[30] = bfsOrder.size();
-        features[31] = computeDepth(root);
-        features[32] = log1pSafe(root.getEstimatedRows());
-        features[33] = log1pSafe(root.getEstimatedCost());
+        // --- Global features (immediately after the per-operator section) ---
+        int g = MAX_OPERATOR_SLOTS * FEATURES_PER_SLOT;
+        features[g]     = bfsOrder.size();
+        features[g + 1] = computeDepth(root);
+        features[g + 2] = log1pSafe(root.getEstimatedRows());
+        features[g + 3] = log1pSafe(root.getEstimatedCost());
 
         return features;
     }
@@ -160,6 +167,7 @@ public class PlanFeaturizer {
         if (node instanceof PhysicalProject)         return TYPE_PROJECT;
         if (node instanceof PhysicalNestedLoopJoin)  return TYPE_NLJ;
         if (node instanceof PhysicalHashJoin)        return TYPE_HASH_JOIN;
+        if (node instanceof PhysicalAggregate)       return TYPE_AGGREGATE;
         return 0.0;
     }
 

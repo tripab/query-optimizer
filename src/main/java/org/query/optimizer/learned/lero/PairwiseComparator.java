@@ -39,8 +39,9 @@ import java.util.Random;
  */
 public class PairwiseComparator {
 
-    // Encoder: 34 plan features → 64 hidden → 32 embedding
-    static final int[] ENCODER_SIZES    = {34, 64, 32};
+    // Encoder: FEATURE_DIM plan features → 64 hidden → 32 embedding
+    static final int[] ENCODER_SIZES    =
+            {org.query.optimizer.learned.common.PlanFeaturizer.FEATURE_DIM, 64, 32};
     // Classifier: [embA; embB; embA−embB] = 96 → 32 hidden → 1 logit
     static final int[] CLASSIFIER_SIZES = {96, 32, 1};
     static final double LEARNING_RATE   = 0.001;
