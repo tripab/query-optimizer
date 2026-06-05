@@ -318,7 +318,16 @@ public class SQLParser {
         List<String> columns = new ArrayList<>();
 
         do {
-            columns.add(consume());
+            // Accept an optional table qualifier (e.g. "p.category") and keep only
+            // the bare column name, matching how the SELECT list resolves
+            // qualified columns. Without this, "GROUP BY p.category" would yield
+            // the qualifier "p" as the group-by column and fail to resolve.
+            String name = consume();
+            if (match(".")) {
+                consume();          // '.'
+                name = consume();   // column name after the qualifier
+            }
+            columns.add(name);
 
             if (match(",")) {
                 consume();
