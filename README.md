@@ -3,9 +3,12 @@
 A from-scratch implementation of a relational query optimizer in Java, sitting between a toy demo and a
 production-grade system. It covers the full pipeline: a CSV-backed catalog, a hand-written SQL parser, logical and
 physical plan trees, rule-based optimization (predicate/projection pushdown, filter merge), cost modeling with
-cardinality estimation, dynamic-programming join ordering, histogram-based selectivity, cost calibration, two
-execution engines (Volcano iterator and vectorized batch-at-a-time), and two AI-powered plan selection strategies
-(Bao and Lero).
+cardinality estimation that propagates per-column distinct-value estimates, dynamic-programming join ordering,
+histogram-based selectivity, cost calibration, cost-based join-algorithm selection, two execution engines (Volcano
+iterator and vectorized batch-at-a-time), and two AI-powered plan selection strategies (Bao and Lero).
+
+All of these stages are tied together by a single orchestration entry point, `QueryOptimizer`, configured through an
+`OptimizationOptions` object — see [The Unified Optimizer Pipeline](#the-unified-optimizer-pipeline) below.
 
 The project is documented in a blog post series:
 [Building a simple query optimizer from scratch, Part 1](https://abhinavtripathi.bearblog.dev/building-simple-query-optimizer-from-scratch-part-1/)
@@ -190,13 +193,14 @@ GROUP BY column1, column2
 - Aggregate functions: COUNT, SUM, AVG, MIN, MAX
 - Literals: integers, floats, strings
 
-**Explicitly NOT Supported** (phase 2):
+**Explicitly NOT Supported:**
 
 - Subqueries, UNION, DISTINCT
 - Outer joins (LEFT, RIGHT, FULL)
 - Complex expressions (arithmetic, functions, CASE)
 - ORDER BY, LIMIT, HAVING
-- More than 3-way joins
+
+(Multi-way inner joins *are* supported: dynamic-programming join ordering handles up to 10 tables.)
 
 ### AST Classes
 
@@ -529,6 +533,7 @@ Complete implementation of the **Volcano iterator model**:
 3. **PhysicalProject** - Column selection
 4. **PhysicalNestedLoopJoin** - Nested loop join algorithm
 5. **PhysicalHashJoin** - Hash join algorithm
+6. **PhysicalAggregate** - Blocking GROUP BY / aggregation (COUNT/SUM/AVG/MIN/MAX)
 
 All operators implement the `Iterator` interface:
 
@@ -637,13 +642,24 @@ PhysicalNode physical = builder.build(logicalPlan);
 
 ### Join Algorithm Selection
 
+The algorithm is chosen per the `JoinAlgorithmPolicy` (see
+[The Unified Optimizer Pipeline](#the-unified-optimizer-pipeline)). Under `COST_BASED`, an equi-join compares the
+physical cost of a hash join (which scales with the *sum* of the input sizes) against a nested-loop join (which
+scales with their *product*) and keeps the cheaper; `FORCE_HASH` / `FORCE_NLJ` override that choice. A non-equi join
+always uses nested-loop.
+
 ```java
-private PhysicalNode convertJoin(LogicalJoin join) {
-    if (preferHashJoin && isEquiJoin(join.getCondition())) {
-        return new PhysicalHashJoin(...);
-    } else {
-        return new PhysicalNestedLoopJoin(...);
+private PhysicalNode chooseJoinAlgorithm(LogicalJoin join, PhysicalNode left, PhysicalNode right, ...) {
+    if (!isEquiJoin(join.getCondition())) {
+        return new PhysicalNestedLoopJoin(...);          // hash join needs an equi-key
     }
+    return switch (joinAlgorithmPolicy) {
+        case FORCE_NLJ  -> new PhysicalNestedLoopJoin(...);
+        case FORCE_HASH -> new PhysicalHashJoin(...);
+        case COST_BASED -> costEstimator.hashJoinCost(left, right) <= costEstimator.nestedLoopJoinCost(left, right)
+                ? new PhysicalHashJoin(...)
+                : new PhysicalNestedLoopJoin(...);
+    };
 }
 ```
 
@@ -873,6 +889,93 @@ graph TD
 3. Join execution
 4. Join algorithm comparison
 5. Complete pipeline (parse -> optimize -> execute)
+
+## The Unified Optimizer Pipeline
+
+All of the stages above — parsing, rule rewrites, join ordering, estimation, and physical planning — are tied
+together by a single entry point, **`QueryOptimizer`**. Earlier milestones wired these stages together ad hoc in
+each demo; `QueryOptimizer` is the one orchestration path that the demos, benchmarks, and learned optimizers all
+share, so they exercise the same behavior.
+
+```mermaid
+graph TD
+  A["SQL"] -->|"SQLParser"| B["AST"]
+  B -->|"LogicalPlanBuilder"| C["Logical plan (canonical form)"]
+  C -->|"RuleEngine (rules from OptimizationOptions)"| D["Rewritten logical plan"]
+  D -->|"DP join ordering (JoinOrderPolicy)"| E["Reordered logical plan"]
+  E -->|"CardinalityEstimator + SimpleCostModel"| F["Annotated logical plan (rows + cost)"]
+  F -->|"PhysicalPlanBuilder (JoinAlgorithmPolicy)"| G["Physical plan (physical cost)"]
+  G -->|"Executor / VectorizedExecutor"| H["Results"]
+```
+
+### QueryOptimizer
+
+```java
+QueryOptimizer optimizer = new QueryOptimizer(catalog);
+QueryOptimizer.OptimizationResult result = optimizer.optimize(sql, OptimizationOptions.defaults());
+
+result.initialLogicalPlan();     // as parsed (canonical form)
+result.optimizedLogicalPlan();   // after rules + join reordering + annotation
+result.physicalPlan();           // executable, annotated with physical cost
+```
+
+### OptimizationOptions
+
+A single immutable object controls every knob, so the same query can be planned several ways for comparison (this
+is exactly how the learned optimizers generate plan variants):
+
+```java
+new OptimizationOptions(
+    enablePredicatePushdown,   // boolean
+    enableProjectionPushdown,  // boolean
+    enableFilterMerge,         // boolean
+    joinOrderPolicy,           // PRESERVE_INPUT | DP
+    joinAlgorithmPolicy);      // COST_BASED | FORCE_HASH | FORCE_NLJ
+
+OptimizationOptions.defaults(); // all rules on, DP join ordering, hash join
+```
+
+| Knob | Values | Effect |
+|---|---|---|
+| `JoinOrderPolicy` | `PRESERVE_INPUT`, `DP` | Keep the FROM order, or search for the cheapest order via dynamic programming |
+| `JoinAlgorithmPolicy` | `COST_BASED`, `FORCE_HASH`, `FORCE_NLJ` | Pick hash vs. nested-loop by physical cost, or force one |
+
+### DP Join Ordering on Real Plans
+
+Dynamic-programming join ordering (the standalone algorithm from `DPJoinOrderer`) is integrated into the pipeline
+for connected inner-join trees of three or more tables. The join inputs are extracted as whole single-table
+*leaves* — a scan together with any operators pushed onto it, such as a filter — so reordering preserves those
+operators rather than dropping them. A join subtree the extractor cannot safely reorder (e.g. a filter spanning two
+tables) is left in its input order.
+
+### Statistics-Propagating Cardinality Estimation
+
+`CardinalityEstimator` propagates a `SubtreeStatistics` structure up the plan: alongside the estimated row count it
+carries a per-column estimate of the number of distinct values (NDV) and optional min/max. This lets estimates made
+higher in the tree reflect the filtering and projection done below them — a filter that pins a column to one value
+drops that column's NDV to 1, and a join above it uses the *reduced* NDV instead of reaching back to the original
+base-table statistics. (Estimates are keyed by unqualified column name; columns that share a name within one
+subtree are a known limitation, documented in the code.)
+
+### Logical vs. Physical Costing
+
+Two cost concerns are kept separate:
+
+- **`SimpleCostModel`** costs *logical* plans and drives join ordering (how many rows each operator produces).
+- **`PhysicalCostEstimator`** costs the chosen *physical* operators (hash join cost scales with the sum of input
+  sizes, nested-loop with their product), and is what cost-based join-algorithm selection compares. The physical
+  plan's cost annotations come from this estimator, so the same query's hash and nested-loop variants get
+  distinguishable costs.
+
+### Trying It Out
+
+`TraditionalOptimizerDemo` runs one three-way join through the entire pipeline, prints each stage, and contrasts the
+strong configuration (all rules, DP ordering, cost-based join selection) against a naive baseline (no rules, input
+order, forced nested-loop): lower estimated cost, identical results.
+
+```bash
+mvn -q compile exec:java -Dexec.mainClass=org.query.optimizer.TraditionalOptimizerDemo
+```
 
 ## Vectorized Execution
 
@@ -1381,8 +1484,17 @@ These runs automatically when you build with Maven without skipping tests,
 | `org/query/optimizer/rules/PredicatePushdown.java`                       | Push filters below joins                             |
 | `org/query/optimizer/rules/ProjectionPushdown.java`                      | Push projections below filters                       |
 | `org/query/optimizer/rules/FilterMerge.java`                             | Merge consecutive filters                            |
-| `org/query/optimizer/SimpleCostModel.java`                               | Cost estimation implementation                       |
-| `org/query/optimizer/CardinalityEstimator.java`                          | Row count estimation                                 |
+| `org/query/optimizer/SimpleCostModel.java`                               | Logical cost estimation implementation               |
+| `org/query/optimizer/CardinalityEstimator.java`                          | Cardinality + per-column NDV propagation             |
+| `org/query/optimizer/SubtreeStatistics.java`                             | Derived subtree stats (rows + per-column NDV/min/max)|
+| `org/query/optimizer/PhysicalCostEstimator.java`                         | Physical, algorithm-aware operator costing           |
+| `org/query/optimizer/QueryOptimizer.java`                                | Unified parse→rewrite→reorder→annotate→physical flow |
+| `org/query/optimizer/OptimizationOptions.java`                           | Optimizer configuration (rules + join policies)      |
+| `org/query/optimizer/JoinOrderPolicy.java`                               | PRESERVE_INPUT vs DP join ordering                   |
+| `org/query/optimizer/JoinAlgorithmPolicy.java`                           | COST_BASED / FORCE_HASH / FORCE_NLJ                  |
+| `org/query/optimizer/DPJoinOrderer.java`                                 | Dynamic-programming join ordering                    |
+| `org/query/optimizer/JoinExtractor.java`                                 | Extracts reorderable join leaves + conditions        |
+| `org/query/optimizer/TraditionalOptimizerDemo.java`                      | Full traditional-pipeline showcase (strong vs naive) |
 | `org/query/optimizer/RuleEngineAndOptimizationsDemo.java`                | Demonstrates all Milestone 3 features                |
 | `org/query/optimizer/RuleEngineAndOptimizationsTest.java`                | End-to-end tests for Milestone 3                     |
 | `org/query/optimizer/physical/PhysicalScan.java`                         | Table scan operator                                  |
@@ -1390,7 +1502,9 @@ These runs automatically when you build with Maven without skipping tests,
 | `org/query/optimizer/physical/PhysicalProject.java`                      | Project operator                                     |
 | `org/query/optimizer/physical/PhysicalNestedLoopJoin.java`               | Nested loop join                                     |
 | `org/query/optimizer/physical/PhysicalHashJoin.java`                     | Hash join                                            |
-| `org/query/optimizer/physical/PhysicalPlanBuilder.java`                  | Logical to physical conversion (configurable join pref) |
+| `org/query/optimizer/physical/PhysicalAggregate.java`                    | Blocking GROUP BY / aggregation (Volcano)            |
+| `org/query/optimizer/physical/JoinAlgorithmCounts.java`                  | Tally of hash vs nested-loop joins in a plan         |
+| `org/query/optimizer/physical/PhysicalPlanBuilder.java`                  | Logical→physical conversion (cost-based join policy) |
 | `org/query/optimizer/executor/Executor.java`                             | Execution engine                                     |
 | `org/query/optimizer/PhysicalExecutionDemo.java`                         | Complete demonstrations                              |
 | `org/query/optimizer/PhysicalExecutionTest.java`                         | Automated tests                                      |
