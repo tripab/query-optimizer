@@ -16,20 +16,29 @@ import java.util.Set;
 /**
  * Extracts join information from a logical plan.
  * <p>
- * Finds all scans and join conditions in a join subtree, including when
- * individual join inputs are wrapped in supported unary operators.
+ * Finds the join inputs (<em>leaves</em>) and join conditions in a join subtree.
+ * Each leaf is the maximal single-table subtree feeding the join structure — a
+ * scan, possibly wrapped in unary operators (such as a pushed-down
+ * {@link LogicalFilter}). Leaves are returned <em>whole</em> so that reordering
+ * the join structure preserves those operators; previously the extractor recursed
+ * through and discarded them, which silently dropped pushed-down filters and
+ * produced wrong results after reordering.
+ * <p>
+ * A non-join operator that spans more than one table (e.g. a filter sitting
+ * <em>between</em> two joins) cannot be preserved by table-set-based reordering,
+ * so such a subtree is reported as unsupported and left untouched.
  */
 public class JoinExtractor {
-    record JoinInfo(List<LogicalScan> scans,
+    record JoinInfo(List<LogicalNode> leaves,
                     List<DPJoinOrderer.JoinCondition> conditions,
                     LogicalNode joinRoot,
                     boolean supported) {
         public boolean hasMultipleJoins() {
-            return scans.size() > 1;
+            return leaves.size() > 1;
         }
 
         public boolean isSingleTable() {
-            return scans.size() == 1;
+            return leaves.size() == 1;
         }
 
         public boolean hasJoinTree() {
@@ -38,50 +47,37 @@ public class JoinExtractor {
     }
 
     public JoinInfo extract(LogicalNode plan) {
-        ArrayList<LogicalScan> scans = new ArrayList<>();
+        ArrayList<LogicalNode> leaves = new ArrayList<>();
         ArrayList<DPJoinOrderer.JoinCondition> conditions = new ArrayList<>();
 
         LogicalNode joinRoot = findJoinRoot(plan);
         if (joinRoot == null) {
             LogicalScan scan = findScan(plan);
             if (scan != null) {
-                scans.add(scan);
+                leaves.add(scan);
             }
-            return new JoinInfo(scans, conditions, null, true);
+            return new JoinInfo(leaves, conditions, null, true);
         }
 
-        boolean supported = extractFromJoinTree(joinRoot, scans, conditions);
+        boolean supported = extractFromJoinTree(joinRoot, leaves, conditions);
         if (!supported) {
-            scans.clear();
+            leaves.clear();
             conditions.clear();
         }
 
-        return new JoinInfo(scans, conditions, joinRoot, supported);
+        return new JoinInfo(leaves, conditions, joinRoot, supported);
     }
 
     private boolean extractFromJoinTree(LogicalNode node,
-                                        List<LogicalScan> scans,
+                                        List<LogicalNode> leaves,
                                         List<DPJoinOrderer.JoinCondition> conditions) {
-        if (node instanceof LogicalScan scan) {
-            scans.add(scan);
-            return true;
-        }
-        if (node instanceof LogicalFilter filter) {
-            return extractFromJoinTree(filter.getChild(), scans, conditions);
-        }
-        if (node instanceof LogicalProject project) {
-            return extractFromJoinTree(project.getChild(), scans, conditions);
-        }
-        if (node instanceof LogicalAggregate aggregate) {
-            return extractFromJoinTree(aggregate.getChild(), scans, conditions);
-        }
         if (node instanceof LogicalJoin join) {
             if (join.getJoinType() != LogicalJoin.JoinType.INNER) {
                 return false;
             }
 
-            if (!extractFromJoinTree(join.getLeft(), scans, conditions) ||
-                    !extractFromJoinTree(join.getRight(), scans, conditions)) {
+            if (!extractFromJoinTree(join.getLeft(), leaves, conditions) ||
+                    !extractFromJoinTree(join.getRight(), leaves, conditions)) {
                 return false;
             }
 
@@ -97,7 +93,15 @@ public class JoinExtractor {
             return true;
         }
 
-        return false;
+        // Non-join node: treat as a join input (leaf). It is only reorderable if it
+        // covers exactly one table; otherwise (e.g. a filter over a join) reordering
+        // by table set could not preserve it, so report unsupported.
+        Set<String> tables = collectScanNames(node);
+        if (tables.size() != 1) {
+            return false;
+        }
+        leaves.add(node);
+        return true;
     }
 
     private String resolveJoinSideTable(Expression condition,

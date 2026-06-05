@@ -70,13 +70,13 @@ public class QueryOptimizer {
         }
 
         JoinExtractor.JoinInfo joinInfo = joinExtractor.extract(plan);
-        if (!joinInfo.supported() || !joinInfo.hasJoinTree() || joinInfo.scans().size() < 3) {
+        if (!joinInfo.supported() || !joinInfo.hasJoinTree() || joinInfo.leaves().size() < 3) {
             return plan;
         }
 
         try {
             DPJoinOrderer orderer = new DPJoinOrderer(costModel);
-            LogicalNode reorderedJoinTree = orderer.findBestJoinOrder(joinInfo.scans(), joinInfo.conditions());
+            LogicalNode reorderedJoinTree = orderer.findBestJoinOrder(joinInfo.leaves(), joinInfo.conditions());
             return joinExtractor.replaceJoinSubtree(plan, joinInfo.joinRoot(), reorderedJoinTree);
         } catch (IllegalStateException e) {
             return plan;

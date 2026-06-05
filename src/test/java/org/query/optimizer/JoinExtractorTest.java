@@ -19,8 +19,16 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 public class JoinExtractorTest {
     private final JoinExtractor extractor = new JoinExtractor();
 
+    /** Returns the table name of the single scan under a join-input leaf. */
+    private static String tableOf(LogicalNode leaf) {
+        if (leaf instanceof LogicalScan scan) {
+            return scan.getTableName();
+        }
+        return tableOf(leaf.getChildren().getFirst());
+    }
+
     @Test
-    void extractTraversesSupportedUnaryWrappersInsideJoinTree() {
+    void extractPreservesUnaryWrappersAsLeaves() {
         LogicalNode plan = new LogicalProject(
                 List.of(new Expression.ColumnRef("customers", "name")),
                 List.of("name"),
@@ -51,9 +59,13 @@ public class JoinExtractorTest {
 
         assertTrue(info.supported());
         assertTrue(info.hasJoinTree());
-        assertEquals(2, info.scans().size());
+        assertEquals(2, info.leaves().size());
+        // Leaves are returned whole, preserving the unary operators wrapping each scan
+        // (so reordering cannot drop a pushed-down filter).
+        assertInstanceOf(LogicalFilter.class, info.leaves().get(0));
+        assertInstanceOf(LogicalProject.class, info.leaves().get(1));
         assertEquals(List.of("customers", "orders"),
-                info.scans().stream().map(LogicalScan::getTableName).toList());
+                info.leaves().stream().map(JoinExtractorTest::tableOf).toList());
         assertEquals(1, info.conditions().size());
         assertEquals("customers", info.conditions().getFirst().leftTable());
         assertEquals("orders", info.conditions().getFirst().rightTable());
@@ -114,8 +126,8 @@ public class JoinExtractorTest {
         JoinExtractor.JoinInfo info = extractor.extract(scan);
 
         assertTrue(info.supported());
-        assertEquals(1, info.scans().size());
-        assertEquals("customers", info.scans().getFirst().getTableName());
+        assertEquals(1, info.leaves().size());
+        assertEquals("customers", tableOf(info.leaves().getFirst()));
         assertEquals(0, info.conditions().size());
     }
 }

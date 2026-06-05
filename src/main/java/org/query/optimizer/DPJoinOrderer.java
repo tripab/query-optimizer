@@ -61,43 +61,46 @@ public class DPJoinOrderer {
     }
 
     /**
-     * Find the optimal join order for a set of tables.
+     * Find the optimal join order for a set of join inputs.
      *
-     * @param scans      List of table scans to join
+     * @param leaves     join inputs, each covering exactly one table; a leaf may be
+     *                   a bare {@link LogicalScan} or a single-table subtree (e.g. a
+     *                   pushed-down filter over a scan), which is preserved in the
+     *                   reordered tree
      * @param conditions Join conditions between tables
      * @return Optimally ordered join tree
      */
-    public LogicalNode findBestJoinOrder(List<LogicalScan> scans, List<JoinCondition> conditions) {
-        if (scans.isEmpty()) {
+    public LogicalNode findBestJoinOrder(List<? extends LogicalNode> leaves, List<JoinCondition> conditions) {
+        if (leaves.isEmpty()) {
             throw new IllegalArgumentException("No tables to join!");
         }
-        if (scans.size() == 1) {
-            return scans.getFirst();
+        if (leaves.size() == 1) {
+            return leaves.getFirst();
         }
 
         // check if the problem is too large
-        if (scans.size() > maxTables) {
-            System.err.println("WARNING: Too many tables (" + scans.size() +
+        if (leaves.size() > maxTables) {
+            System.err.println("WARNING: Too many tables (" + leaves.size() +
                     ") for DP. Falling back to left-deep heuristic.");
-            return buildLeftDeepTree(scans, conditions);
+            return buildLeftDeepTree(leaves, conditions);
         }
 
         memo.clear();
 
         // Phase 1: Initialize with single tables
-        for (LogicalScan scan : scans) {
-            Set<String> tableSet = Collections.singleton(scan.getTableName());
-            double cost = costModel.estimate(scan);
-            memo.put(tableSet, new PlanInfo(scan, cost, tableSet));
+        for (LogicalNode leaf : leaves) {
+            Set<String> tableSet = Collections.singleton(tableNameOf(leaf));
+            double cost = costModel.estimate(leaf);
+            memo.put(tableSet, new PlanInfo(leaf, cost, tableSet));
         }
         // Phase 2: Build up larger subsets
-        for (int size = 2; size <= scans.size(); size++) {
-            optimizeSubsetsOfSize(size, scans, conditions);
+        for (int size = 2; size <= leaves.size(); size++) {
+            optimizeSubsetsOfSize(size, leaves, conditions);
         }
         // Phase 3: Return best plan for all tables
         Set<String> allTables = new HashSet<>();
-        for (LogicalScan scan : scans) {
-            allTables.add(scan.getTableName());
+        for (LogicalNode leaf : leaves) {
+            allTables.add(tableNameOf(leaf));
         }
         PlanInfo best = memo.get(allTables);
         if (best == null) {
@@ -108,11 +111,23 @@ public class DPJoinOrderer {
     }
 
     /**
+     * Returns the single table covered by a join-input leaf.
+     */
+    private String tableNameOf(LogicalNode leaf) {
+        Set<String> tables = getTableNames(leaf);
+        if (tables.size() != 1) {
+            throw new IllegalArgumentException(
+                    "Join leaf must cover exactly one table, got: " + tables);
+        }
+        return tables.iterator().next();
+    }
+
+    /**
      * Optimize all subsets of a given size.
      */
-    private void optimizeSubsetsOfSize(int size, List<LogicalScan> scans, List<JoinCondition> conditions) {
+    private void optimizeSubsetsOfSize(int size, List<? extends LogicalNode> leaves, List<JoinCondition> conditions) {
         // generate all subsets of a given size
-        List<Set<String>> subsets = generateSubsets(scans, size);
+        List<Set<String>> subsets = generateSubsets(leaves, size);
         for (Set<String> subset : subsets) {
             PlanInfo best = findBestPlanForSubset(subset, conditions);
             if (best != null) {
@@ -197,9 +212,9 @@ public class DPJoinOrderer {
     /**
      * Generate all subsets of tables with a specific size.
      */
-    private List<Set<String>> generateSubsets(List<LogicalScan> scans, int size) {
-        var tables = scans.stream().
-                map(LogicalScan::getTableName)
+    private List<Set<String>> generateSubsets(List<? extends LogicalNode> leaves, int size) {
+        var tables = leaves.stream()
+                .map(this::tableNameOf)
                 .toList();
         var result = new ArrayList<Set<String>>();
         generateSubsetsHelper(tables, size, 0, new HashSet<>(), result);
@@ -223,9 +238,9 @@ public class DPJoinOrderer {
      * Fallback: Build a left-deep tree with heuristic ordering.
      * Used when DP is too expensive.
      */
-    private LogicalNode buildLeftDeepTree(List<LogicalScan> scans, List<JoinCondition> conditions) {
+    private LogicalNode buildLeftDeepTree(List<? extends LogicalNode> leaves, List<JoinCondition> conditions) {
         // simple heuristic: order by table size (smallest first)
-        var sorted = new ArrayList<>(scans);
+        var sorted = new ArrayList<LogicalNode>(leaves);
         sorted.sort((a, b) -> {
             long cardinalityA = costModel.estimateCardinality(a);
             long cardinalityB = costModel.estimateCardinality(b);
@@ -237,7 +252,7 @@ public class DPJoinOrderer {
             var right = sorted.get(i);
             // find applicable join condition
             var leftTables = getTableNames(result);
-            var rightTables = Collections.singleton(right.getTableName());
+            var rightTables = Collections.singleton(tableNameOf(right));
             JoinCondition condition = findJoinCondition(leftTables, rightTables, conditions);
             if (condition != null) {
                 result = new LogicalJoin(result, right, LogicalJoin.JoinType.INNER, condition.condition());
