@@ -4,7 +4,10 @@ import org.query.optimizer.SimpleCostModel;
 import org.query.optimizer.catalog.Catalog;
 import org.query.optimizer.executor.Executor;
 import org.query.optimizer.executor.Executor.ExecutionResult;
+import org.query.optimizer.executor.ExecutionTimer;
+import org.query.optimizer.executor.Timed;
 import org.query.optimizer.learned.bao.BanditOptimizer;
+import org.query.optimizer.learned.common.ExecutionFeedback;
 import org.query.optimizer.learned.common.HintSet;
 import org.query.optimizer.learned.common.PlanVariantGenerator;
 import org.query.optimizer.learned.common.WorkloadGenerator.ParsedQuery;
@@ -137,15 +140,22 @@ public class LearnedOptimizerBenchmark {
             Map<HintSet, PhysicalNode> variants =
                     varGen.generateVariants(workload.get(i).logicalPlan(),
                             List.of(HintSet.DEFAULT));
-            result[i] = exec.execute(variants.values().iterator().next()).executionTimeMs();
+            PhysicalNode plan = variants.values().iterator().next();
+            result[i] = ExecutionTimer.run(() -> exec.execute(plan)).millis();
         }
         return result;
     }
 
     /**
      * Executes every distinct plan variant for each query and picks the one with
-     * the lowest actual latency.  This is the true oracle — the ceiling no
-     * strategy can beat.
+     * the lowest {@link ExecutionFeedback#logicalCost(long, long) logical cost}.
+     * This is the true oracle — the ceiling no strategy can beat.
+     *
+     * <p>Scoring by logical cost rather than a single-shot wall-clock read keeps
+     * the oracle's plan choice stable: on sub-millisecond in-memory queries the
+     * deterministic tuple-count term decides, so timer noise cannot flip which
+     * variant is declared best. The reported latency is the chosen variant's
+     * measured time, in milliseconds.
      */
     private OracleRun runOracle(List<ParsedQuery> workload) {
         SimpleCostModel      cm        = new SimpleCostModel(catalog);
@@ -160,20 +170,47 @@ public class LearnedOptimizerBenchmark {
                     varGen.generateVariants(workload.get(i).logicalPlan(),
                             HintSet.allHintSets());
 
-            long    bestMs  = Long.MAX_VALUE;
-            HintSet bestArm = null;
-
+            List<VariantCost> executed = new ArrayList<>(variants.size());
             for (Map.Entry<HintSet, PhysicalNode> e : variants.entrySet()) {
-                ExecutionResult res = exec.execute(e.getValue());
-                if (res.executionTimeMs() < bestMs) {
-                    bestMs  = res.executionTimeMs();
-                    bestArm = e.getKey();
+                PhysicalNode           plan = e.getValue();
+                Timed<ExecutionResult> run  = ExecutionTimer.run(() -> exec.execute(plan));
+                executed.add(new VariantCost(e.getKey(),
+                        run.value().tuplesProcessed(), run.millis()));
+            }
+
+            HintSet bestArm = pickOracleArm(executed);
+            long    bestMs  = 0L;
+            for (VariantCost v : executed) {
+                if (v.arm().equals(bestArm)) {
+                    bestMs = v.latencyMs();
+                    break;
                 }
             }
-            latencies[i] = bestMs == Long.MAX_VALUE ? 0L : bestMs;
+            latencies[i] = bestMs;
             bestArms[i]  = bestArm;
         }
         return new OracleRun(latencies, bestArms);
+    }
+
+    /** One executed variant's measured work, used to score the oracle's choice. */
+    record VariantCost(HintSet arm, long tuplesProcessed, long latencyMs) {}
+
+    /**
+     * Returns the arm whose variant has the lowest logical cost, or {@code null}
+     * if the input is empty. Package-visible so the selection rule can be tested
+     * directly against a constructed set.
+     */
+    static HintSet pickOracleArm(List<VariantCost> executed) {
+        HintSet best     = null;
+        double  bestCost = Double.MAX_VALUE;
+        for (VariantCost v : executed) {
+            double cost = ExecutionFeedback.logicalCost(v.tuplesProcessed(), v.latencyMs());
+            if (best == null || cost < bestCost) {
+                best     = v.arm();
+                bestCost = cost;
+            }
+        }
+        return best;
     }
 
     // -------------------------------------------------------------------------

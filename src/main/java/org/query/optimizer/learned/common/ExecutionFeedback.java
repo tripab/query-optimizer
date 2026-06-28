@@ -45,6 +45,16 @@ public record ExecutionFeedback(
      * their training target rather than raw {@code actualLatencyMs}.
      */
     public double logicalCost() {
+        return logicalCost(tuplesProcessed, actualLatencyMs);
+    }
+
+    /**
+     * The {@link #logicalCost()} formula as a free function, so callers that
+     * have a tuple count and a latency but no full feedback object (e.g. the
+     * benchmark's oracle, which scores plan variants) can use the same stable
+     * cost without duplicating the weighting.
+     */
+    public static double logicalCost(long tuplesProcessed, long actualLatencyMs) {
         return tuplesProcessed * 0.01 + Math.max(actualLatencyMs, 0);
     }
 }
