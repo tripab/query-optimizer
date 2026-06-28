@@ -16,8 +16,10 @@ import org.query.optimizer.physical.PhysicalNode;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Random;
 
 /**
  * Runs four plan-selection strategies on the same workload and collects
@@ -58,10 +60,19 @@ import java.util.Map;
  */
 public class LearnedOptimizerBenchmark {
 
+    /** Seed for the learned strategies, so their decisions are reproducible. */
+    public static final long DEFAULT_SEED = 42L;
+
     private final Catalog catalog;
+    private final long seed;
 
     public LearnedOptimizerBenchmark(Catalog catalog) {
+        this(catalog, DEFAULT_SEED);
+    }
+
+    public LearnedOptimizerBenchmark(Catalog catalog, long seed) {
         this.catalog = catalog;
+        this.seed = seed;
     }
 
     // -------------------------------------------------------------------------
@@ -89,13 +100,13 @@ public class LearnedOptimizerBenchmark {
 
         System.out.print("  [3/4] BAO     ...");
         List<BanditOptimizer.QueryMetrics> baoMetrics =
-                new BanditOptimizer(catalog).runWorkload(workload);
+                new BanditOptimizer(catalog, new Random(seed)).runWorkload(workload);
         long[] baoMs = extractLatencies(baoMetrics);
         System.out.printf(" %,d ms%n", sum(baoMs));
 
         System.out.print("  [4/4] LERO    ...");
         List<LeroOptimizer.QueryMetrics> leroMetrics =
-                new LeroOptimizer(catalog).runWorkload(workload);
+                new LeroOptimizer(catalog, new Random(seed)).runWorkload(workload);
         long[] leroMs = extractLeroLatencies(leroMetrics);
         System.out.printf(" %,d ms%n", sum(leroMs));
 
@@ -211,6 +222,62 @@ public class LearnedOptimizerBenchmark {
             }
         }
         return best;
+    }
+
+    // -------------------------------------------------------------------------
+    // Wall-clock distribution (machine-dependent)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Re-runs the whole workload {@code repeats} times (after one untimed
+     * warm-up pass) and returns each repeat's total wall-clock latency per
+     * strategy. Strategy decisions are seeded, so only the timing varies between
+     * repeats — report these with {@link #distribution(long[])} as a median and
+     * IQR rather than as a single noisy total.
+     *
+     * @return strategy name -&gt; {@code repeats} total-latency samples (ms)
+     */
+    public Map<String, long[]> measureWallClockTotals(List<ParsedQuery> workload, int repeats) {
+        runWorkloadTotals(workload);                       // warm-up, discarded
+        Map<String, long[]> samples = new LinkedHashMap<>();
+        for (int k = 0; k < repeats; k++) {
+            Map<String, Long> totals = runWorkloadTotals(workload);
+            for (Map.Entry<String, Long> e : totals.entrySet()) {
+                samples.computeIfAbsent(e.getKey(), key -> new long[repeats])[k] = e.getValue();
+            }
+        }
+        return samples;
+    }
+
+    /** Total wall-clock latency (ms) of one workload pass, per strategy. */
+    private Map<String, Long> runWorkloadTotals(List<ParsedQuery> workload) {
+        Map<String, Long> totals = new LinkedHashMap<>();
+        totals.put("DEFAULT", sum(runDefault(workload)));
+        totals.put("ORACLE", sum(runOracle(workload).latencies()));
+        totals.put("BAO", sum(extractLatencies(
+                new BanditOptimizer(catalog, new Random(seed)).runWorkload(workload))));
+        totals.put("LERO", sum(extractLeroLatencies(
+                new LeroOptimizer(catalog, new Random(seed)).runWorkload(workload))));
+        return totals;
+    }
+
+    /** Median, inter-quartile range, min, and max of a set of samples. */
+    public record Distribution(long median, long iqr, long min, long max) {}
+
+    /** Computes a {@link Distribution} from raw samples (e.g. per-repeat totals). */
+    public static Distribution distribution(long[] samples) {
+        if (samples.length == 0) return new Distribution(0, 0, 0, 0);
+        long[] sorted = samples.clone();
+        Arrays.sort(sorted);
+        long iqr = percentile(sorted, 75) - percentile(sorted, 25);
+        return new Distribution(percentile(sorted, 50), iqr, sorted[0], sorted[sorted.length - 1]);
+    }
+
+    /** Nearest-rank percentile of an already-sorted array. */
+    private static long percentile(long[] sorted, int p) {
+        int rank = (int) Math.ceil(p / 100.0 * sorted.length);
+        int idx = Math.max(0, Math.min(sorted.length - 1, rank - 1));
+        return sorted[idx];
     }
 
     // -------------------------------------------------------------------------
