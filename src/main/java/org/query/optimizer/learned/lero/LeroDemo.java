@@ -92,7 +92,7 @@ public class LeroDemo {
         LeroOptimizer lero = new LeroOptimizer(catalog);
         List<QueryMetrics> leroMetrics = lero.runWorkload(workload);
         long leroTotal = leroMetrics.stream()
-                .mapToLong(m -> m.result().executionTimeMs())
+                .mapToLong(m -> m.actualLatencyMs())
                 .sum();
         System.out.printf("Lero total: %,d ms%n%n", leroTotal);
 
@@ -211,7 +211,7 @@ public class LeroDemo {
             int end = Math.min(checkpoint, n);
             for (int i = prev; i < end; i++) {
                 baseCumul += baselineLatencies[i];
-                leroCumul += leroMetrics.get(i).result().executionTimeMs();
+                leroCumul += leroMetrics.get(i).actualLatencyMs();
             }
             long   delta = baseCumul - leroCumul;
             String phase = end <= LeroOptimizer.WARMUP_QUERIES ? "warm-up" : "warm";
@@ -293,7 +293,7 @@ public class LeroDemo {
             if (m.usedCostModel()) continue; // shouldn't happen in warm phase
             warmCount++;
 
-            long leroMs      = m.result().executionTimeMs();
+            long leroMs      = m.actualLatencyMs();
             long costModelMs = costModelLatencies[i];
 
             if (leroMs < costModelMs)       leroWon++;
@@ -325,10 +325,10 @@ public class LeroDemo {
         for (QueryMetrics m : leroMetrics) {
             if (m.usedCostModel()) {
                 warmUpCount++;
-                warmUpMs += m.result().executionTimeMs();
+                warmUpMs += m.actualLatencyMs();
             } else {
                 warmCount++;
-                warmMs += m.result().executionTimeMs();
+                warmMs += m.actualLatencyMs();
             }
         }
 

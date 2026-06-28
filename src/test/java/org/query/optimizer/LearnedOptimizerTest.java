@@ -390,7 +390,7 @@ public class LearnedOptimizerTest {
         // 3. Total logical cost at most 4× DEFAULT baseline (sanity bound)
         double baoCost = baoMetrics.stream()
                 .mapToDouble(m -> m.result().tuplesProcessed() * 0.01
-                             + m.result().executionTimeMs())
+                             + m.actualLatencyMs())
                 .sum();
         assertTrue(baoCost <= baseCost * 4.0 + 1.0,
                 String.format("Bao cost (%.3f) must not exceed 4× baseline (%.3f)",
@@ -529,7 +529,7 @@ public class LearnedOptimizerTest {
         // 3. Total logical cost at most 4× DEFAULT baseline (sanity bound)
         double leroCost = leroMetrics.stream()
                 .mapToDouble(m -> m.result().tuplesProcessed() * 0.01
-                                  + m.result().executionTimeMs())
+                                  + m.actualLatencyMs())
                 .sum();
         assertTrue(leroCost <= baseCost * 4.0 + 1.0,
                 String.format("Lero cost (%.3f) must not exceed 4× baseline (%.3f)",

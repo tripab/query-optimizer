@@ -4,6 +4,8 @@ import org.query.optimizer.SimpleCostModel;
 import org.query.optimizer.catalog.Catalog;
 import org.query.optimizer.executor.Executor;
 import org.query.optimizer.executor.Executor.ExecutionResult;
+import org.query.optimizer.executor.ExecutionTimer;
+import org.query.optimizer.executor.Timed;
 import org.query.optimizer.learned.common.HintSet;
 import org.query.optimizer.learned.common.PlanFeaturizer;
 import org.query.optimizer.learned.common.PlanVariantGenerator;
@@ -119,7 +121,8 @@ public class LeroOptimizer {
                     q.sql(),
                     step.result(),
                     step.selectedPlan(),
-                    step.usedCostModel()));
+                    step.usedCostModel(),
+                    step.actualLatencyMs()));
         }
         return metrics;
     }
@@ -160,8 +163,11 @@ public class LeroOptimizer {
             }
         }
 
-        ExecutionResult result = executor.execute(selectedPlan);
-        return new OptimizeStep(result, selectedPlan, usedCostModel);
+        // Execute the chosen plan, timed via the nanoTime seam. selectedPlan is
+        // assigned in branches above, so copy it into a final for the lambda.
+        final PhysicalNode plan = selectedPlan;
+        Timed<ExecutionResult> run = ExecutionTimer.run(() -> executor.execute(plan));
+        return new OptimizeStep(run.value(), selectedPlan, usedCostModel, run.millis());
     }
 
     // -------------------------------------------------------------------------
@@ -202,7 +208,8 @@ public class LeroOptimizer {
 
     private record OptimizeStep(ExecutionResult result,
                                 PhysicalNode selectedPlan,
-                                boolean usedCostModel) {}
+                                boolean usedCostModel,
+                                long actualLatencyMs) {}
 
     // -------------------------------------------------------------------------
     // Public result type
@@ -211,14 +218,16 @@ public class LeroOptimizer {
     /**
      * Per-query metrics collected during {@link #runWorkload}.
      *
-     * @param sql           the original SQL string
-     * @param result        full execution result (tuples + timing)
-     * @param selectedPlan  the physical plan that was executed
-     * @param usedCostModel true during warm-up when cost model made the choice
+     * @param sql             the original SQL string
+     * @param result          full execution result (tuples processed, rows)
+     * @param selectedPlan    the physical plan that was executed
+     * @param usedCostModel   true during warm-up when cost model made the choice
+     * @param actualLatencyMs observed wall-clock execution time in milliseconds
      */
     public record QueryMetrics(
             String          sql,
             ExecutionResult result,
             PhysicalNode    selectedPlan,
-            boolean         usedCostModel) {}
+            boolean         usedCostModel,
+            long            actualLatencyMs) {}
 }

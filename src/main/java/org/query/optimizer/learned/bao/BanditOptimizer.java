@@ -4,6 +4,8 @@ import org.query.optimizer.SimpleCostModel;
 import org.query.optimizer.catalog.Catalog;
 import org.query.optimizer.executor.Executor;
 import org.query.optimizer.executor.Executor.ExecutionResult;
+import org.query.optimizer.executor.ExecutionTimer;
+import org.query.optimizer.executor.Timed;
 import org.query.optimizer.learned.common.ExecutionFeedback;
 import org.query.optimizer.learned.common.HintSet;
 import org.query.optimizer.learned.common.PlanFeaturizer;
@@ -120,7 +122,7 @@ public class BanditOptimizer {
                     step.result(),
                     step.selectedArm(),
                     step.predictedLatency(),
-                    step.result().executionTimeMs()));
+                    step.actualLatencyMs()));
         }
         return metrics;
     }
@@ -147,22 +149,24 @@ public class BanditOptimizer {
         HintSet selected          = sampler.selectArm(featureMap, valueModel);
         double  predictedLatency  = valueModel.predict(featureMap.get(selected)).mean();
 
-        // 4. Execute the selected plan
-        PhysicalNode    plan   = variants.get(selected);
-        ExecutionResult result = executor.execute(plan);
+        // 4. Execute the selected plan, timed via the nanoTime seam
+        PhysicalNode           plan = variants.get(selected);
+        Timed<ExecutionResult> run  = ExecutionTimer.run(() -> executor.execute(plan));
+        ExecutionResult        result          = run.value();
+        long                   actualLatencyMs = run.millis();
 
         // 5. Record feedback for learning
         ExecutionFeedback feedback = new ExecutionFeedback(
                 sql,
                 selected,
                 featureMap.get(selected),
-                result.executionTimeMs(),
+                actualLatencyMs,
                 result.tuplesProcessed(),
                 plan.getEstimatedCost(),
                 plan.getEstimatedRows());
         valueModel.addFeedback(feedback);
 
-        return new OptimizeStep(result, selected, predictedLatency);
+        return new OptimizeStep(result, selected, predictedLatency, actualLatencyMs);
     }
 
     // -------------------------------------------------------------------------
@@ -171,7 +175,8 @@ public class BanditOptimizer {
 
     private record OptimizeStep(ExecutionResult result,
                                 HintSet selectedArm,
-                                double predictedLatency) {}
+                                double predictedLatency,
+                                long actualLatencyMs) {}
 
     // -------------------------------------------------------------------------
     // Public result type

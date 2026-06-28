@@ -277,7 +277,7 @@ public class LearnedOptimizerBenchmark {
 
     private static long[] extractLeroLatencies(List<LeroOptimizer.QueryMetrics> metrics) {
         long[] ms = new long[metrics.size()];
-        for (int i = 0; i < ms.length; i++) ms[i] = metrics.get(i).result().executionTimeMs();
+        for (int i = 0; i < ms.length; i++) ms[i] = metrics.get(i).actualLatencyMs();
         return ms;
     }
 
