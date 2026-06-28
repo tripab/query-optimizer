@@ -48,13 +48,11 @@ public class VectorizedExecutor {
      * Executes {@code plan} to completion and returns all result tuples.
      *
      * @param plan the root of a vectorized operator tree
-     * @return execution result containing tuples, elapsed time, and tuple count
+     * @return execution result containing tuples and the tuple count
      */
     public ExecutionResult execute(VectorizedOperator plan) {
         List<Tuple> results = new ArrayList<>();
         long tuplesProduced = 0;
-
-        long startMs = System.currentTimeMillis();
 
         try {
             plan.open();
@@ -66,8 +64,7 @@ public class VectorizedExecutor {
             plan.close();
         }
 
-        long elapsedMs = System.currentTimeMillis() - startMs;
-        return new ExecutionResult(results, elapsedMs, tuplesProduced);
+        return new ExecutionResult(results, tuplesProduced);
     }
 
     /**
@@ -91,8 +88,7 @@ public class VectorizedExecutor {
         }
 
         System.out.println();
-        System.out.printf("%d row(s) returned in %d ms%n",
-                result.getResultCount(), result.executionTimeMs());
+        System.out.printf("%d row(s) returned%n", result.getResultCount());
 
         return result;
     }

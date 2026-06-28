@@ -2,6 +2,8 @@ package org.query.optimizer;
 
 import org.query.optimizer.catalog.Catalog;
 import org.query.optimizer.executor.Executor;
+import org.query.optimizer.executor.ExecutionTimer;
+import org.query.optimizer.executor.Timed;
 import org.query.optimizer.logical.LogicalNode;
 import org.query.optimizer.parser.AST;
 import org.query.optimizer.parser.LogicalPlanBuilder;
@@ -150,10 +152,12 @@ public class PhysicalExecutionDemo {
         );
 
         Executor executor = new Executor();
-        Executor.ExecutionResult hashResult = executor.execute(hashPlan);
+        Timed<Executor.ExecutionResult> hashRun = ExecutionTimer.run(() -> executor.execute(hashPlan));
+        Executor.ExecutionResult hashResult = hashRun.value();
+        long hashMs = hashRun.millis();
 
         System.out.println("Result: " + hashResult.getResultCount() + " rows");
-        System.out.println("Time:   " + hashResult.executionTimeMs() + " ms");
+        System.out.println("Time:   " + hashMs + " ms");
         System.out.println();
 
         // Test 2: Nested Loop Join
@@ -169,10 +173,12 @@ public class PhysicalExecutionDemo {
                 )
         );
 
-        Executor.ExecutionResult nlResult = executor.execute(nlPlan);
+        Timed<Executor.ExecutionResult> nlRun = ExecutionTimer.run(() -> executor.execute(nlPlan));
+        Executor.ExecutionResult nlResult = nlRun.value();
+        long nlMs = nlRun.millis();
 
         System.out.println("Result: " + nlResult.getResultCount() + " rows");
-        System.out.println("Time:   " + nlResult.executionTimeMs() + " ms");
+        System.out.println("Time:   " + nlMs + " ms");
         System.out.println();
 
         // Test 3: Cost-based selection — let the optimizer choose
@@ -196,12 +202,11 @@ public class PhysicalExecutionDemo {
 
         // Compare
         System.out.println("--- Comparison ---");
-        System.out.println("Hash join:        " + hashResult.executionTimeMs() + " ms");
-        System.out.println("Nested loop join: " + nlResult.executionTimeMs() + " ms");
+        System.out.println("Hash join:        " + hashMs + " ms");
+        System.out.println("Nested loop join: " + nlMs + " ms");
 
-        if (hashResult.executionTimeMs() < nlResult.executionTimeMs()) {
-            double speedup = (double) nlResult.executionTimeMs() /
-                    hashResult.executionTimeMs();
+        if (hashMs < nlMs && hashMs > 0) {
+            double speedup = (double) nlMs / hashMs;
             System.out.println("Hash join is " + String.format("%.1fx", speedup) + " faster!");
         }
     }
@@ -249,13 +254,12 @@ public class PhysicalExecutionDemo {
         System.out.println("Step 5: Executing...");
         Executor executor = new Executor();
         List<String> columnNames = Arrays.asList("name", "amount");
-        Executor.ExecutionResult result = executor.executeAndPrint(
-                physicalPlan, columnNames
-        );
+        long totalMs = ExecutionTimer.run(
+                () -> executor.executeAndPrint(physicalPlan, columnNames)).millis();
 
         System.out.println("\n=== Pipeline Complete ===");
         System.out.println("Parse → Logical Plan → Optimize → Physical Plan → Execute");
-        System.out.println("Total execution time: " + result.executionTimeMs() + " ms");
+        System.out.println("Total execution time: " + totalMs + " ms");
     }
 
     private static List<String> extractColumnNames(AST.SelectStmt ast) {

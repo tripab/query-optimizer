@@ -6,6 +6,8 @@ import org.junit.jupiter.api.Test;
 import org.query.optimizer.catalog.Catalog;
 import org.query.optimizer.executor.Executor;
 import org.query.optimizer.executor.Executor.ExecutionResult;
+import org.query.optimizer.executor.ExecutionTimer;
+import org.query.optimizer.executor.Timed;
 import org.query.optimizer.learned.bao.BanditOptimizer;
 import org.query.optimizer.learned.bao.BanditOptimizer.QueryMetrics;
 import org.query.optimizer.learned.bao.PlanValueModel;
@@ -366,10 +368,11 @@ public class LearnedOptimizerTest {
             Map<HintSet, PhysicalNode> variants =
                     varGen.generateVariants(q.logicalPlan(), List.of(HintSet.DEFAULT));
             PhysicalNode plan = variants.values().iterator().next();
-            ExecutionResult res = exec2.execute(plan);
+            Timed<ExecutionResult> run = ExecutionTimer.run(() -> exec2.execute(plan));
+            ExecutionResult res = run.value();
             double[] features = feat2.featurize(plan);
             baseCost += new ExecutionFeedback("", HintSet.DEFAULT, features,
-                    res.executionTimeMs(), res.tuplesProcessed(),
+                    run.millis(), res.tuplesProcessed(),
                     plan.getEstimatedCost(), plan.getEstimatedRows()).logicalCost();
         }
 
@@ -504,9 +507,10 @@ public class LearnedOptimizerTest {
             Map<HintSet, PhysicalNode> variants =
                     varGen.generateVariants(q.logicalPlan(), List.of(HintSet.DEFAULT));
             PhysicalNode plan = variants.values().iterator().next();
-            ExecutionResult res = exec.execute(plan);
+            Timed<ExecutionResult> run = ExecutionTimer.run(() -> exec.execute(plan));
+            ExecutionResult res = run.value();
             baseCost += new ExecutionFeedback("", HintSet.DEFAULT, feat.featurize(plan),
-                    res.executionTimeMs(), res.tuplesProcessed(),
+                    run.millis(), res.tuplesProcessed(),
                     plan.getEstimatedCost(), plan.getEstimatedRows()).logicalCost();
         }
 

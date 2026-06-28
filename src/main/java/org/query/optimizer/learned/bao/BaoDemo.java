@@ -3,7 +3,7 @@ package org.query.optimizer.learned.bao;
 import org.query.optimizer.SimpleCostModel;
 import org.query.optimizer.catalog.Catalog;
 import org.query.optimizer.executor.Executor;
-import org.query.optimizer.executor.Executor.ExecutionResult;
+import org.query.optimizer.executor.ExecutionTimer;
 import org.query.optimizer.learned.common.DataGenerator;
 import org.query.optimizer.learned.common.HintSet;
 import org.query.optimizer.learned.common.PlanVariantGenerator;
@@ -102,8 +102,7 @@ public class BaoDemo {
             Map<HintSet, PhysicalNode> variants =
                     varGen.generateVariants(workload.get(i).logicalPlan(), List.of(HintSet.DEFAULT));
             PhysicalNode plan = variants.values().iterator().next();
-            ExecutionResult result = executor.execute(plan);
-            latencies[i] = result.executionTimeMs();
+            latencies[i] = ExecutionTimer.run(() -> executor.execute(plan)).millis();
         }
         return latencies;
     }

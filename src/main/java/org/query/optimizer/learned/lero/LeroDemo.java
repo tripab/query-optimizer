@@ -3,7 +3,7 @@ package org.query.optimizer.learned.lero;
 import org.query.optimizer.SimpleCostModel;
 import org.query.optimizer.catalog.Catalog;
 import org.query.optimizer.executor.Executor;
-import org.query.optimizer.executor.Executor.ExecutionResult;
+import org.query.optimizer.executor.ExecutionTimer;
 import org.query.optimizer.learned.common.DataGenerator;
 import org.query.optimizer.learned.common.HintSet;
 import org.query.optimizer.learned.common.PlanFeaturizer;
@@ -124,8 +124,8 @@ public class LeroDemo {
         for (int i = 0; i < workload.size(); i++) {
             Map<HintSet, PhysicalNode> variants =
                     varGen.generateVariants(workload.get(i).logicalPlan(), List.of(HintSet.DEFAULT));
-            ExecutionResult result = executor.execute(variants.values().iterator().next());
-            latencies[i] = result.executionTimeMs();
+            PhysicalNode plan = variants.values().iterator().next();
+            latencies[i] = ExecutionTimer.run(() -> executor.execute(plan)).millis();
         }
         return latencies;
     }
@@ -147,7 +147,8 @@ public class LeroDemo {
                     best     = plan;
                 }
             }
-            latencies[i] = executor.execute(best).executionTimeMs();
+            final PhysicalNode chosen = best;
+            latencies[i] = ExecutionTimer.run(() -> executor.execute(chosen)).millis();
         }
         return latencies;
     }

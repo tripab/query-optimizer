@@ -21,8 +21,7 @@ public class Executor {
     /**
      * Execution result containing tuples and statistics.
      */
-    public record ExecutionResult(List<Tuple> tuples, long executionTimeMs,
-                                  long tuplesProcessed) {
+    public record ExecutionResult(List<Tuple> tuples, long tuplesProcessed) {
 
         public int getResultCount() {
             return tuples.size();
@@ -30,8 +29,8 @@ public class Executor {
 
         @Override
         public String toString() {
-            return String.format("ExecutionResult[%d tuples, %d ms, %d processed]",
-                    tuples.size(), executionTimeMs, tuplesProcessed);
+            return String.format("ExecutionResult[%d tuples, %d processed]",
+                    tuples.size(), tuplesProcessed);
         }
     }
 
@@ -45,8 +44,6 @@ public class Executor {
 
         List<Tuple> results = new ArrayList<>();
         long tuplesProcessed = 0;
-
-        long startTime = System.currentTimeMillis();
 
         try {
             // Open the iterator
@@ -64,10 +61,7 @@ public class Executor {
             iterator.close();
         }
 
-        long endTime = System.currentTimeMillis();
-        long executionTimeMs = endTime - startTime;
-
-        return new ExecutionResult(results, executionTimeMs, tuplesProcessed);
+        return new ExecutionResult(results, tuplesProcessed);
     }
 
     /**
@@ -86,8 +80,7 @@ public class Executor {
 
         // Print summary
         System.out.println();
-        System.out.println(result.getResultCount() + " row(s) returned in " +
-                result.executionTimeMs() + " ms");
+        System.out.println(result.getResultCount() + " row(s) returned");
 
         return result;
     }
@@ -103,8 +96,6 @@ public class Executor {
         List<Tuple> results = new ArrayList<>();
         long tuplesProcessed = 0;
 
-        long startTime = System.currentTimeMillis();
-
         try {
             iterator.open();
 
@@ -118,9 +109,7 @@ public class Executor {
             iterator.close();
         }
 
-        long endTime = System.currentTimeMillis();
-
-        return new ExecutionResult(results, endTime - startTime, tuplesProcessed);
+        return new ExecutionResult(results, tuplesProcessed);
     }
 
     /**

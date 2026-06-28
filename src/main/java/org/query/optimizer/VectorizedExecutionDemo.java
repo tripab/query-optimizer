@@ -3,6 +3,8 @@ package org.query.optimizer;
 import org.query.optimizer.catalog.Catalog;
 import org.query.optimizer.executor.Executor;
 import org.query.optimizer.executor.Executor.ExecutionResult;
+import org.query.optimizer.executor.ExecutionTimer;
+import org.query.optimizer.executor.Timed;
 import org.query.optimizer.logical.LogicalNode;
 import org.query.optimizer.physical.PhysicalNode;
 import org.query.optimizer.util.DataGenerator;
@@ -167,14 +169,16 @@ public class VectorizedExecutionDemo {
         System.out.println("Volcano physical plan:");
         System.out.println(indent(volcanoplan.toPrettyString(), 2));
 
-        ExecutionResult volcanoResult = new Executor().execute(volcanoplan);
+        Timed<ExecutionResult> volcanoRun = ExecutionTimer.run(() -> new Executor().execute(volcanoplan));
+        ExecutionResult volcanoResult = volcanoRun.value();
 
         // ---- Vectorized --------------------------------------------------
         VectorizedOperator vecPlan = new VectorizedPlanBuilder(catalog).build(optimised);
         System.out.println("Vectorized operator tree:");
         System.out.println(indent(vecPlan.describe(), 2));
 
-        ExecutionResult vecResult = new VectorizedExecutor().execute(vecPlan);
+        Timed<ExecutionResult> vecRun = ExecutionTimer.run(() -> new VectorizedExecutor().execute(vecPlan));
+        ExecutionResult vecResult = vecRun.value();
 
         // ---- Sanity check ------------------------------------------------
         if (volcanoResult.getResultCount() != vecResult.getResultCount()) {
@@ -186,11 +190,11 @@ public class VectorizedExecutionDemo {
         // ---- Timing table ------------------------------------------------
         printTimingTable(
             volcanoResult.getResultCount(),
-            volcanoResult.executionTimeMs(),
-            vecResult.executionTimeMs());
+            volcanoRun.millis(),
+            vecRun.millis());
 
-        volcanoTotalMs[0] += volcanoResult.executionTimeMs();
-        vecTotalMs[0]     += vecResult.executionTimeMs();
+        volcanoTotalMs[0] += volcanoRun.millis();
+        vecTotalMs[0]     += vecRun.millis();
     }
 
     // -----------------------------------------------------------------------
