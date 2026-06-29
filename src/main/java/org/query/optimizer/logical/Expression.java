@@ -94,7 +94,19 @@ public interface Expression {
         public Object evaluate(Tuple row, Schema schema) {
             Object leftVal = left.evaluate(row, schema);
             Object rightVal = right.evaluate(row, schema);
+            return applyOperator(leftVal, rightVal);
+        }
 
+        /**
+         * Applies this operator to two already-evaluated operand values.
+         * <p>
+         * Factored out of {@link #evaluate} so callers that resolve operands
+         * themselves (e.g. a join that must bind each side's columns against its
+         * own schema) can reuse the exact comparison/logical semantics rather
+         * than re-implementing them. A {@code null} operand yields {@code false},
+         * matching SQL's three-valued logic collapse used elsewhere here.
+         */
+        public Object applyOperator(Object leftVal, Object rightVal) {
             if (leftVal == null || rightVal == null) {
                 return false;
             }

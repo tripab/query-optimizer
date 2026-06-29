@@ -5,9 +5,10 @@ import org.query.optimizer.catalog.Tuple;
 import org.query.optimizer.executor.Iterator;
 import org.query.optimizer.logical.Expression;
 
-import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 
 /**
@@ -21,6 +22,14 @@ import java.util.List;
  * for each right_tuple in right:
  * if join_condition(left_tuple, right_tuple):
  * output (left_tuple, right_tuple)
+ * <p>
+ * The join condition is evaluated <em>side-aware</em>: each {@code ColumnRef} is
+ * resolved against the side ({@code left} or {@code right}) that owns it and read
+ * from that side's tuple, rather than from a flat concatenated tuple. This is
+ * what keeps a qualified reference such as {@code customers.id} bound to the right
+ * input even when the left input also exposes an {@code id} column — a collision
+ * that a name-only lookup over the combined tuple silently resolves to the wrong
+ * side. (Hash join is immune because it extracts each side's key separately.)
  */
 public class PhysicalNestedLoopJoin extends PhysicalNode implements Iterator {
     private final PhysicalNode left;
@@ -28,23 +37,48 @@ public class PhysicalNestedLoopJoin extends PhysicalNode implements Iterator {
     private final Expression condition;
     private final Schema leftSchema;
     private final Schema rightSchema;
+    /** Lower-cased table names scanned under the left/right inputs, used to
+     *  disambiguate a qualified column that exists on both sides. */
+    private final Set<String> leftTables;
+    private final Set<String> rightTables;
 
     // Execution state
     private Iterator leftIterator;
     private Iterator rightIterator;
     private Tuple currentLeftTuple;
-    private final Schema combinedSchema;
     private boolean isOpen = false;
 
     public PhysicalNestedLoopJoin(PhysicalNode left, PhysicalNode right,
                                   Expression condition,
                                   Schema leftSchema, Schema rightSchema) {
+        this(left, right, condition, leftSchema, rightSchema, Set.of(), Set.of());
+    }
+
+    /**
+     * @param leftTables  lower-cased names of tables scanned under {@code left}
+     * @param rightTables lower-cased names of tables scanned under {@code right}
+     *                    — together they let a qualified column reference that
+     *                    collides across both inputs bind to the correct side.
+     */
+    public PhysicalNestedLoopJoin(PhysicalNode left, PhysicalNode right,
+                                  Expression condition,
+                                  Schema leftSchema, Schema rightSchema,
+                                  Set<String> leftTables, Set<String> rightTables) {
         this.left = left;
         this.right = right;
         this.condition = condition;
         this.leftSchema = leftSchema;
         this.rightSchema = rightSchema;
-        this.combinedSchema = createCombinedSchema(leftSchema, rightSchema);
+        this.leftTables = lowerCased(leftTables);
+        this.rightTables = lowerCased(rightTables);
+    }
+
+    private static Set<String> lowerCased(Set<String> names) {
+        Set<String> result = new HashSet<>();
+        for (String name : names) {
+            result.add(name.toLowerCase());
+        }
+        return result;
     }
 
     public PhysicalNode getLeft() {
@@ -118,14 +152,12 @@ public class PhysicalNestedLoopJoin extends PhysicalNode implements Iterator {
             Tuple rightTuple = rightIterator.next();
 
             if (rightTuple != null) {
-                // Combine tuples
-                Tuple combined = combineTuples(currentLeftTuple, rightTuple);
+                // Check join condition with each side resolved against its own
+                // schema/tuple, then emit the combined tuple only on a match.
+                Object result = evaluateCondition(condition, currentLeftTuple, rightTuple);
 
-                // Check join condition
-                Object result = condition.evaluate(combined, combinedSchema);
-
-                if (result instanceof Boolean && (Boolean) result) {
-                    return combined;
+                if (result instanceof Boolean match && match) {
+                    return combineTuples(currentLeftTuple, rightTuple);
                 }
 
                 // Continue with next right tuple
@@ -175,12 +207,68 @@ public class PhysicalNestedLoopJoin extends PhysicalNode implements Iterator {
     }
 
     /**
-     * Create combined schema for joined tuples.
+     * Evaluates the join predicate for a single {@code (left, right)} tuple pair,
+     * resolving every column reference against the side that owns it. Only
+     * {@code ColumnRef} resolution is side-sensitive; binary operators and
+     * literals reuse the standard {@link Expression} semantics.
      */
-    private Schema createCombinedSchema(Schema left, Schema right) {
-        List<Schema.Column> columns = new ArrayList<>();
-        columns.addAll(left.getColumns());
-        columns.addAll(right.getColumns());
-        return new Schema(columns);
+    private Object evaluateCondition(Expression expr, Tuple leftTuple, Tuple rightTuple) {
+        if (expr instanceof Expression.ColumnRef ref) {
+            return resolveColumn(ref, leftTuple, rightTuple);
+        }
+        if (expr instanceof Expression.BinaryOp binOp) {
+            Object leftVal = evaluateCondition(binOp.left(), leftTuple, rightTuple);
+            Object rightVal = evaluateCondition(binOp.right(), leftTuple, rightTuple);
+            return binOp.applyOperator(leftVal, rightVal);
+        }
+        // Literals (and any other side-independent expression) ignore the row.
+        return expr.evaluate(leftTuple, leftSchema);
+    }
+
+    /**
+     * Resolves a column reference to its value by binding it to the correct input
+     * and reading from that input's tuple with that input's column key.
+     * <p>
+     * A column present on only one side binds there. A column present on both
+     * sides (a name collision such as {@code id}) is disambiguated by the
+     * reference's table qualifier; absent a usable qualifier it falls back to the
+     * left side, preserving the historical name-only behaviour.
+     */
+    private Object resolveColumn(Expression.ColumnRef ref, Tuple leftTuple, Tuple rightTuple) {
+        String column = ref.columnName();
+        boolean leftHas = leftSchema.hasColumn(column);
+        boolean rightHas = rightSchema.hasColumn(column);
+
+        if (leftHas && rightHas) {
+            return boundToRight(ref)
+                    ? readFrom(rightTuple, rightSchema, column)
+                    : readFrom(leftTuple, leftSchema, column);
+        }
+        if (rightHas) {
+            return readFrom(rightTuple, rightSchema, column);
+        }
+        if (leftHas) {
+            return readFrom(leftTuple, leftSchema, column);
+        }
+        throw new IllegalArgumentException("Column not found on either join input: " + column);
+    }
+
+    /**
+     * Decides whether a column that exists on both inputs should bind to the
+     * right side, using the reference's table qualifier; defaults to the left
+     * side when the qualifier is missing or matches neither input's tables.
+     */
+    private boolean boundToRight(Expression.ColumnRef ref) {
+        if (ref.tableName() == null) {
+            return false;
+        }
+        String table = ref.tableName().toLowerCase();
+        // Prefer an explicit right-side match; only the right branch can override
+        // the left-side default, so a left match (or no match) keeps the default.
+        return rightTables.contains(table) && !leftTables.contains(table);
+    }
+
+    private static Object readFrom(Tuple tuple, Schema schema, String column) {
+        return tuple.find(schema.getColumn(column));
     }
 }

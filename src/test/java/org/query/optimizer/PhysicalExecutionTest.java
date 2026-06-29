@@ -147,6 +147,55 @@ public class PhysicalExecutionTest {
         assertEquals(5, firstRow.size(), "Join should have 5 columns (3 from customers + 2 from orders)");
     }
 
+    /**
+     * Regression test for the qualified-column collision bug (AGENT_LOG T7).
+     * <p>
+     * Joins {@code orders} (left) to {@code customers} (right) on
+     * {@code orders.customer_id = customers.id}. Both inputs expose an {@code id}
+     * column, so a name-only lookup over a flat combined tuple binds
+     * {@code customers.id} to {@code orders.id} and degenerates the predicate into
+     * {@code orders.customer_id = orders.id} — which matches every customer for
+     * orders where the two happen to be equal (6 rows here) and none otherwise.
+     * With side-aware resolution it is a proper foreign-key join: exactly one row
+     * per order (3), each pairing an order with the customer it references.
+     */
+    @Test
+    public void testNestedLoopJoinQualifiedColumnCollision() {
+        PhysicalScan ordersScan = new PhysicalScan("orders", catalog);
+        PhysicalScan customersScan = new PhysicalScan("customers", catalog);
+
+        Expression joinCondition = new Expression.BinaryOp(
+                Expression.BinaryOp.Operator.EQ,
+                new Expression.ColumnRef("orders", "customer_id"),
+                new Expression.ColumnRef("customers", "id")
+        );
+
+        Schema ordersSchema = catalog.getTableMetadata("orders").getSchema();
+        Schema customersSchema = catalog.getTableMetadata("customers").getSchema();
+
+        PhysicalNestedLoopJoin join = new PhysicalNestedLoopJoin(
+                ordersScan, customersScan, joinCondition,
+                ordersSchema, customersSchema,
+                java.util.Set.of("orders"), java.util.Set.of("customers")
+        );
+
+        Executor.ExecutionResult result = new Executor().execute(join);
+
+        assertEquals(3, result.getResultCount(),
+                "foreign-key join: exactly one matching customer per order");
+
+        // Every emitted pair must satisfy the real predicate: the order's
+        // customer_id equals the joined customer's id (not the order's own id).
+        for (Tuple row : result.tuples()) {
+            Object orderCustomerId = row.find(ordersSchema.getColumn("customer_id"));
+            // The combined tuple carries both id columns; the customers.id value
+            // is the second 'id' attribute (right side), so read it positionally.
+            Object customerId = row.get(ordersSchema.columnCount()).getValue();
+            assertEquals(orderCustomerId, customerId,
+                    "joined customer's id must equal the order's customer_id");
+        }
+    }
+
     @Test
     public void testHashJoin() {
         PhysicalScan leftScan = new PhysicalScan("customers", catalog);

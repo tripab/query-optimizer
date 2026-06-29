@@ -11,7 +11,9 @@ import org.query.optimizer.parser.*;
 import org.query.optimizer.vectorized.AggregateAccumulator;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Converts optimized logical plans to executable physical plans.
@@ -176,14 +178,21 @@ public class PhysicalPlanBuilder {
                                              Schema leftSchema, Schema rightSchema) {
         Expression condition = join.getCondition();
 
+        // Tables scanned under each input, so a nested-loop join can bind a
+        // qualified column that collides across both inputs to the correct side.
+        Set<String> leftTables = collectTableNames(join.getLeft());
+        Set<String> rightTables = collectTableNames(join.getRight());
+
         // Hash join requires an equi-join key; otherwise we must use nested-loop.
         if (!isEquiJoin(condition)) {
-            return new PhysicalNestedLoopJoin(left, right, condition, leftSchema, rightSchema);
+            return new PhysicalNestedLoopJoin(left, right, condition,
+                    leftSchema, rightSchema, leftTables, rightTables);
         }
 
         return switch (joinAlgorithmPolicy) {
             case FORCE_NLJ ->
-                    new PhysicalNestedLoopJoin(left, right, condition, leftSchema, rightSchema);
+                    new PhysicalNestedLoopJoin(left, right, condition,
+                            leftSchema, rightSchema, leftTables, rightTables);
             case FORCE_HASH ->
                     new PhysicalHashJoin(left, right, condition, leftSchema, rightSchema);
             case COST_BASED -> {
@@ -191,9 +200,28 @@ public class PhysicalPlanBuilder {
                 double nljCost = costEstimator.nestedLoopJoinCost(left, right);
                 yield (hashCost <= nljCost)
                         ? new PhysicalHashJoin(left, right, condition, leftSchema, rightSchema)
-                        : new PhysicalNestedLoopJoin(left, right, condition, leftSchema, rightSchema);
+                        : new PhysicalNestedLoopJoin(left, right, condition,
+                                leftSchema, rightSchema, leftTables, rightTables);
             }
         };
+    }
+
+    /**
+     * Collects the lower-cased names of all tables scanned beneath {@code node}.
+     */
+    private static Set<String> collectTableNames(LogicalNode node) {
+        Set<String> names = new HashSet<>();
+        collectTableNames(node, names);
+        return names;
+    }
+
+    private static void collectTableNames(LogicalNode node, Set<String> out) {
+        if (node instanceof LogicalScan scan) {
+            out.add(scan.getTableName().toLowerCase());
+        }
+        for (LogicalNode child : node.getChildren()) {
+            collectTableNames(child, out);
+        }
     }
 
     /**

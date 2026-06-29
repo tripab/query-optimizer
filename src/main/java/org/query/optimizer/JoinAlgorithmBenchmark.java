@@ -47,11 +47,9 @@ import java.util.concurrent.TimeUnit;
  *   java -jar target/benchmarks.jar JoinAlgorithmBenchmark
  * </pre>
  *
- * <p><b>Caveat:</b> the nested-loop arm currently under-counts rows on joins
- * whose two inputs share a column name (e.g. both have {@code id}), because the
- * join condition is evaluated on a flat combined tuple where a qualified column
- * binds to the wrong side. Until that correctness bug is fixed (AGENT_LOG T7),
- * the nested-loop timings are not a like-for-like comparison against hash join.
+ * <p>Both arms produce identical result sets — even though the two inputs share
+ * an {@code id} column — because the nested-loop join resolves qualified columns
+ * side-aware (AGENT_LOG T7); the timings are a like-for-like comparison.
  */
 @BenchmarkMode(Mode.AverageTime)
 @OutputTimeUnit(TimeUnit.MICROSECONDS)
