@@ -6,6 +6,7 @@ import org.query.optimizer.OptimizationOptions;
 import org.query.optimizer.QueryOptimizer;
 import org.query.optimizer.catalog.Catalog;
 import org.query.optimizer.learned.benchmark.LearnedOptimizerBenchmark.BenchmarkResults;
+import org.query.optimizer.learned.benchmark.LearnedOptimizerBenchmark.Distribution;
 import org.query.optimizer.learned.benchmark.LearnedOptimizerBenchmark.QueryResult;
 import org.query.optimizer.learned.benchmark.LearnedOptimizerBenchmark.StrategyMetrics;
 import org.query.optimizer.learned.common.DataGenerator;
@@ -40,6 +41,12 @@ import java.util.Map;
  *       a warm-up vs. warm-phase performance breakdown.</li>
  *   <li><b>Head-to-head</b> — queries where each strategy won or lost, agreement
  *       rate, and shared failure modes.</li>
+ *   <li><b>Cost-based join-algorithm mix</b> — how the cost model distributes
+ *       hash vs. nested-loop joins across the workload.</li>
+ *   <li><b>Wall-clock distribution</b> — each strategy's total latency as a
+ *       median and IQR over {@link #WALL_CLOCK_REPEATS} timed repeats. This is
+ *       the only machine-dependent section; every section above is seeded and
+ *       reproduces identically across machines.</li>
  * </ol>
  *
  * <h2>How to run</h2>
@@ -56,6 +63,13 @@ public class BaoVsLeroDemo {
      * Raise to 10 for a more pronounced benchmark at the cost of longer runtime.
      */
     private static final int SCALE_FACTOR  = 2;
+    /**
+     * Timed workload repeats used for the wall-clock distribution (Section 7),
+     * after one discarded warm-up pass. Five is the minimum that gives a
+     * meaningful median + IQR; raise it on a quiet benchmark host for tighter
+     * intervals.
+     */
+    private static final int WALL_CLOCK_REPEATS = 5;
 
     public static void main(String[] args) {
         // ------------------------------------------------------------------
@@ -90,6 +104,43 @@ public class BaoVsLeroDemo {
         printSection4LeroDeepDive(catalog, workload, results);
         printSection5HeadToHead(results);
         printSection6JoinAlgorithmMix(catalog, workload);
+        printSection7WallClock(benchmark, workload);
+    }
+
+    // =========================================================================
+    // Section 7: Wall-clock distribution (machine-dependent)
+    // =========================================================================
+
+    /**
+     * Reports each strategy's total workload latency as a median and IQR over
+     * {@link #WALL_CLOCK_REPEATS} timed repeats (after one discarded warm-up pass).
+     *
+     * <p>Everything above is seeded and therefore reproducible — those are the
+     * decision-quality numbers, identical on every machine. Wall-clock totals are
+     * the machine-dependent part, so they are summarised as a distribution rather
+     * than a single noisy total: this is the figure an EC2 (or any other) run
+     * should quote. Strategy decisions don't change between repeats, so the spread
+     * reflects timing noise on the host, not different plan choices.
+     */
+    private static void printSection7WallClock(
+            LearnedOptimizerBenchmark benchmark, List<ParsedQuery> workload) {
+        System.out.println("=== Section 7: Wall-Clock Distribution (machine-dependent) ===");
+        System.out.printf("  %d timed repeat(s) after one warm-up pass; "
+                + "decisions are seeded, so only timing varies across repeats.%n",
+                WALL_CLOCK_REPEATS);
+
+        Map<String, long[]> samples =
+                benchmark.measureWallClockTotals(workload, WALL_CLOCK_REPEATS);
+
+        System.out.printf("  %-10s  %12s  %10s  %10s  %10s%n",
+                "Strategy", "Median (ms)", "IQR (ms)", "Min (ms)", "Max (ms)");
+        System.out.println("  " + "-".repeat(60));
+        for (Map.Entry<String, long[]> e : samples.entrySet()) {
+            Distribution d = LearnedOptimizerBenchmark.distribution(e.getValue());
+            System.out.printf("  %-10s  %,12d  %,10d  %,10d  %,10d%n",
+                    e.getKey(), d.median(), d.iqr(), d.min(), d.max());
+        }
+        System.out.println();
     }
 
     // =========================================================================
