@@ -1480,7 +1480,7 @@ results.leroMetrics().learningSpeedQuery();     // query index where Lero conver
 #### BaoVsLeroDemo
 
 The showpiece combined demo. Generates a 300-query workload, runs all four strategies
-through `LearnedOptimizerBenchmark`, and prints a five-section report:
+through `LearnedOptimizerBenchmark`, and prints a seven-section report:
 
 1. **Overview** -- one-row summary per strategy (total ms, regret ratio, P95/P99, convergence query)
 2. **Learning curves** -- cumulative latency at queries 50/100/150/200/250/300 for all four strategies
@@ -1490,6 +1490,12 @@ through `LearnedOptimizerBenchmark`, and prints a five-section report:
    incrementally), plus warm-up vs. warm-phase latency breakdown
 5. **Head-to-head** -- per-query win/loss between Bao and Lero, agreement rate, and shared failure
    modes (queries where both strategies underperformed the default)
+6. **Cost-based join-algorithm mix** -- how the cost model distributes hash vs. nested-loop joins
+   across the workload
+7. **Wall-clock distribution** -- each strategy's total latency as a median and IQR over a handful of
+   timed repeats (after a warm-up pass). Sections 1-6 are seeded and reproduce identically on any
+   machine; this is the only machine-dependent section, so it is reported as a distribution rather
+   than a single noisy total
 
 ```bash
 mvn -q exec:java -Dexec.mainClass=org.query.optimizer.learned.benchmark.BaoVsLeroDemo
