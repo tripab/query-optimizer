@@ -10,28 +10,32 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 
 /**
- * Verifies the oracle's plan-selection rule (task T3): the best variant is the
- * one with the lowest {@code logicalCost}, so a noisy single-shot timer cannot
- * flip which variant is declared the ceiling.
+ * Verifies the oracle's plan-selection rule (tasks T3/T6): the best variant is
+ * the one that did the least tuple-processing work, with exact ties broken by arm
+ * name. Selection ignores the run's measured latency, so a noisy single-shot timer
+ * cannot flip which variant is declared the ceiling — the choice is reproducible.
  */
 class LearnedOptimizerBenchmarkOracleTest {
 
     @Test
-    void picksLowestLogicalCostVariant() {
-        // Latencies ~equal (sub-millisecond), so the deterministic tuple term decides.
+    void picksLeastTupleWorkVariantIgnoringLatency() {
+        // FORCE_NLJ is the fastest this run but does the most tuple work; the
+        // oracle ignores latency and picks the least-tuples arm.
         List<VariantCost> executed = List.of(
-                new VariantCost(HintSet.DEFAULT, 100, 0),        // cost 1.0
-                new VariantCost(HintSet.FORCE_NLJ, 5000, 0),     // cost 50.0
-                new VariantCost(HintSet.NO_PUSHDOWN, 100, 3));   // cost 4.0
+                new VariantCost(HintSet.DEFAULT, 100, 9),       // least tuples, slow this run
+                new VariantCost(HintSet.FORCE_NLJ, 5000, 0));   // fastest this run, most tuples
         assertEquals(HintSet.DEFAULT, LearnedOptimizerBenchmark.pickOracleArm(executed));
     }
 
     @Test
-    void breaksTiesByLatencyWhenTuplesEqual() {
+    void breaksTiesByArmNameNotLatencyWhenTuplesEqual() {
+        // Equal tuple work: the tie is broken by arm name, not by the (noisy)
+        // latency, and not by list order — FORCE_NLJ is listed first and faster,
+        // yet "default" < "force_nlj" wins, the same way on every run.
         List<VariantCost> executed = List.of(
-                new VariantCost(HintSet.DEFAULT, 100, 9),     // cost 10.0
-                new VariantCost(HintSet.FORCE_NLJ, 100, 2));   // cost 3.0
-        assertEquals(HintSet.FORCE_NLJ, LearnedOptimizerBenchmark.pickOracleArm(executed));
+                new VariantCost(HintSet.FORCE_NLJ, 100, 2),
+                new VariantCost(HintSet.DEFAULT, 100, 9));
+        assertEquals(HintSet.DEFAULT, LearnedOptimizerBenchmark.pickOracleArm(executed));
     }
 
     @Test

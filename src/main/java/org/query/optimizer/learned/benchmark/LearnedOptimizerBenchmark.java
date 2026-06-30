@@ -158,15 +158,14 @@ public class LearnedOptimizerBenchmark {
     }
 
     /**
-     * Executes every distinct plan variant for each query and picks the one with
-     * the lowest {@link ExecutionFeedback#logicalCost(long, long) logical cost}.
-     * This is the true oracle — the ceiling no strategy can beat.
+     * Executes every distinct plan variant for each query and picks the one that
+     * did the least tuple-processing work (see {@link #pickOracleArm}). This is the
+     * oracle — the ceiling no strategy can beat.
      *
-     * <p>Scoring by logical cost rather than a single-shot wall-clock read keeps
-     * the oracle's plan choice stable: on sub-millisecond in-memory queries the
-     * deterministic tuple-count term decides, so timer noise cannot flip which
-     * variant is declared best. The reported latency is the chosen variant's
-     * measured time, in milliseconds.
+     * <p>Selecting by {@code tuplesProcessed} rather than the run's measured
+     * latency keeps the oracle's plan choice stable: timer noise on sub-millisecond
+     * in-memory queries can never flip which variant is declared best. The reported
+     * latency is the chosen variant's measured time, in milliseconds.
      */
     private OracleRun runOracle(List<ParsedQuery> workload) {
         SimpleCostModel      cm        = new SimpleCostModel(catalog);
@@ -207,18 +206,28 @@ public class LearnedOptimizerBenchmark {
     record VariantCost(HintSet arm, long tuplesProcessed, long latencyMs) {}
 
     /**
-     * Returns the arm whose variant has the lowest logical cost, or {@code null}
-     * if the input is empty. Package-visible so the selection rule can be tested
-     * directly against a constructed set.
+     * Returns the arm whose variant did the least tuple-processing work, or
+     * {@code null} if the input is empty. Package-visible so the selection rule
+     * can be tested directly against a constructed set.
+     *
+     * <p>Selection uses {@code tuplesProcessed} — the deterministic component of
+     * {@link ExecutionFeedback#logicalCost(long, long)} — and breaks exact ties by
+     * arm name, so the oracle's choice never depends on the run's measured
+     * latency. That keeps it reproducible: on small in-memory tables a wall-clock
+     * blip (a 1&nbsp;ms timer tick equals 100 tuple-units) could otherwise flip the
+     * winner between runs. The chosen arm's measured latency is still what the
+     * benchmark reports; only the selection is made deterministic.
      */
     static HintSet pickOracleArm(List<VariantCost> executed) {
-        HintSet best     = null;
-        double  bestCost = Double.MAX_VALUE;
+        HintSet best       = null;
+        long    bestTuples = Long.MAX_VALUE;
         for (VariantCost v : executed) {
-            double cost = ExecutionFeedback.logicalCost(v.tuplesProcessed(), v.latencyMs());
-            if (best == null || cost < bestCost) {
-                best     = v.arm();
-                bestCost = cost;
+            long tuples = v.tuplesProcessed();
+            if (best == null
+                    || tuples < bestTuples
+                    || (tuples == bestTuples && v.arm().getName().compareTo(best.getName()) < 0)) {
+                best       = v.arm();
+                bestTuples = tuples;
             }
         }
         return best;
