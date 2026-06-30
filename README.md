@@ -173,11 +173,11 @@ model picks a variant* (step **D**) — Bao via Thompson sampling, Lero via a pa
 
 ```mermaid
 graph LR
-  A["Logical plan"] --> B["PlanVariantGenerator\none physical plan per HintSet"]
-  B --> C["PlanFeaturizer\n52-dim vector per plan"]
-  C --> D["Learned model picks a variant\n(Bao: Thompson sampling / Lero: pairwise tournament)"]
+  A["Logical plan"] --> B["PlanVariantGenerator<br/>one physical plan per HintSet"]
+  B --> C["PlanFeaturizer<br/>52-dim vector per plan"]
+  C --> D["Learned model picks a variant<br/>(Bao: Thompson sampling / Lero: pairwise tournament)"]
   D --> E["Executor runs the chosen plan"]
-  E --> F["ExecutionFeedback\nlatency + tuples processed"]
+  E --> F["ExecutionFeedback<br/>latency + tuples processed"]
   F -->|"update the model"| D
 ```
 
@@ -287,8 +287,8 @@ After executing the chosen plan, the observed latency is fed back to improve the
 
 ```mermaid
 graph TD
-  A["Plan variants (arms)"] --> B["PlanValueModel\nensemble predicts mean and variance of latency"]
-  B --> C["ThompsonSampler\ndraw from N(mean, variance) for each arm"]
+  A["Plan variants (arms)"] --> B["PlanValueModel<br/>ensemble predicts mean and variance of latency"]
+  B --> C["ThompsonSampler<br/>draw from N(mean, variance) for each arm"]
   C --> D["Execute the arm with the lowest sampled latency"]
   D -->|"observed latency into replay buffer"| B
 ```
@@ -533,7 +533,7 @@ column-major layout on first access, then caches the result in the catalog.
 
 ```mermaid
 graph LR
-  A["TableMetadata (row-major)"] -->|"pivot once"| B["ColumnarTable (column-major)\none ColumnVector per column"]
+  A["TableMetadata (row-major)"] -->|"pivot once"| B["ColumnarTable (column-major)<br/>one ColumnVector per column"]
   B -->|"slice into batches"| C["VectorizedScan"]
 ```
 

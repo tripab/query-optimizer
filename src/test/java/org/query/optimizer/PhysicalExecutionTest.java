@@ -173,27 +173,31 @@ public class PhysicalExecutionTest {
         Schema ordersSchema = catalog.getTableMetadata("orders").getSchema();
         Schema customersSchema = catalog.getTableMetadata("customers").getSchema();
 
-        PhysicalNestedLoopJoin join = new PhysicalNestedLoopJoin(
+        PhysicalNestedLoopJoin nlj = new PhysicalNestedLoopJoin(
                 ordersScan, customersScan, joinCondition,
                 ordersSchema, customersSchema,
                 java.util.Set.of("orders"), java.util.Set.of("customers")
         );
 
-        Executor.ExecutionResult result = new Executor().execute(join);
+        // Hash join extracts a key per side, so it is immune to the collision and
+        // is the correct reference. Fresh scans: iterators are single-use.
+        PhysicalHashJoin hashReference = new PhysicalHashJoin(
+                new PhysicalScan("orders", catalog), new PhysicalScan("customers", catalog),
+                joinCondition, ordersSchema, customersSchema
+        );
 
-        assertEquals(3, result.getResultCount(),
+        int nljRows = new Executor().execute(nlj).getResultCount();
+        int hashRows = new Executor().execute(hashReference).getResultCount();
+
+        // Foreign-key join: every order references exactly one customer, so the
+        // correct result is one row per order (3). The pre-fix flat-tuple lookup
+        // bound customers.id to orders.id and returned 6 instead. (We assert on the
+        // row count rather than inspecting the combined tuple, whose per-side
+        // attribute order follows the backing HashMap, not the schema.)
+        assertEquals(3, nljRows,
                 "foreign-key join: exactly one matching customer per order");
-
-        // Every emitted pair must satisfy the real predicate: the order's
-        // customer_id equals the joined customer's id (not the order's own id).
-        for (Tuple row : result.tuples()) {
-            Object orderCustomerId = row.find(ordersSchema.getColumn("customer_id"));
-            // The combined tuple carries both id columns; the customers.id value
-            // is the second 'id' attribute (right side), so read it positionally.
-            Object customerId = row.get(ordersSchema.columnCount()).getValue();
-            assertEquals(orderCustomerId, customerId,
-                    "joined customer's id must equal the order's customer_id");
-        }
+        assertEquals(hashRows, nljRows,
+                "side-aware nested-loop join must agree with the correct hash join (T7)");
     }
 
     @Test
