@@ -5,6 +5,7 @@ import org.query.optimizer.catalog.Tuple;
 import org.query.optimizer.executor.Iterator;
 import org.query.optimizer.logical.Expression;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
@@ -22,6 +23,12 @@ import java.util.Set;
  * for each right_tuple in right:
  * if join_condition(left_tuple, right_tuple):
  * output (left_tuple, right_tuple)
+ * <p>
+ * The right (inner) input is materialized once during {@code open()} and then
+ * re-scanned in memory for every left tuple. The comparison count stays
+ * |L| x |R|, but the right subtree executes exactly once — re-executing it per
+ * left tuple would quadratically re-do that subtree's work whenever the inner
+ * input is itself a join or filter subtree.
  * <p>
  * The join condition is evaluated <em>side-aware</em>: each {@code ColumnRef} is
  * resolved against the side ({@code left} or {@code right}) that owns it and read
@@ -44,7 +51,8 @@ public class PhysicalNestedLoopJoin extends PhysicalNode implements Iterator {
 
     // Execution state
     private Iterator leftIterator;
-    private Iterator rightIterator;
+    private List<Tuple> rightRows;
+    private int rightIndex;
     private Tuple currentLeftTuple;
     private boolean isOpen = false;
 
@@ -130,13 +138,21 @@ public class PhysicalNestedLoopJoin extends PhysicalNode implements Iterator {
         }
 
         leftIterator = (Iterator) left;
-        rightIterator = (Iterator) right;
-
         leftIterator.open();
+
+        // Materialize the inner side once; every left tuple re-scans this list
+        Iterator rightIterator = (Iterator) right;
         rightIterator.open();
+        rightRows = new ArrayList<>();
+        Tuple rightTuple;
+        while ((rightTuple = rightIterator.next()) != null) {
+            rightRows.add(rightTuple);
+        }
+        rightIterator.close();
 
         // Get first left tuple
         currentLeftTuple = leftIterator.next();
+        rightIndex = 0;
 
         isOpen = true;
     }
@@ -148,10 +164,9 @@ public class PhysicalNestedLoopJoin extends PhysicalNode implements Iterator {
         }
 
         while (currentLeftTuple != null) {
-            // Try to find matching right tuple
-            Tuple rightTuple = rightIterator.next();
+            if (rightIndex < rightRows.size()) {
+                Tuple rightTuple = rightRows.get(rightIndex++);
 
-            if (rightTuple != null) {
                 // Check join condition with each side resolved against its own
                 // schema/tuple, then emit the combined tuple only on a match.
                 Object result = evaluateCondition(condition, currentLeftTuple, rightTuple);
@@ -164,12 +179,7 @@ public class PhysicalNestedLoopJoin extends PhysicalNode implements Iterator {
             } else {
                 // Exhausted right side, move to next left tuple
                 currentLeftTuple = leftIterator.next();
-
-                if (currentLeftTuple != null) {
-                    // Reopen right iterator for new left tuple
-                    rightIterator.close();
-                    rightIterator.open();
-                }
+                rightIndex = 0;
             }
         }
 
@@ -187,11 +197,7 @@ public class PhysicalNestedLoopJoin extends PhysicalNode implements Iterator {
             leftIterator = null;
         }
 
-        if (rightIterator != null) {
-            rightIterator.close();
-            rightIterator = null;
-        }
-
+        rightRows = null;
         currentLeftTuple = null;
         isOpen = false;
     }

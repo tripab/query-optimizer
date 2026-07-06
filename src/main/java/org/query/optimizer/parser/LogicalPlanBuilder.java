@@ -6,7 +6,9 @@ import org.query.optimizer.logical.Expression;
 import org.query.optimizer.logical.LogicalNode;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Converts AST to logical plan using visitor pattern.
@@ -17,6 +19,9 @@ import java.util.List;
  * 3. Enforce canonical form:
  * - Separate Filter nodes for each predicate (split ANDs)
  * - Normalized join conditions
+ * - Column qualifiers resolved from FROM-clause aliases to real table names,
+ *   so every downstream consumer (rules, join operators, the DP orderer) can
+ *   match a {@code ColumnRef}'s qualifier against scan table names
  * <p>
  * This class needs access to the Catalog to resolve table/column references.
  */
@@ -31,12 +36,16 @@ public class LogicalPlanBuilder {
      * Build a logical plan from an AST.
      */
     public LogicalNode build(AST.SelectStmt stmt) {
+        // Step 0: Collect FROM-clause aliases so every qualifier below can be
+        // canonicalized to its real table name
+        Map<String, String> aliases = collectAliases(stmt.from());
+
         // Step 1: Build FROM clause (scans and joins)
-        LogicalNode plan = buildFrom(stmt.from());
+        LogicalNode plan = buildFrom(stmt.from(), aliases);
 
         // Step 2: Add WHERE predicates (as separate Filter nodes - canonical form)
         if (stmt.hasWhere()) {
-            plan = buildFilters(stmt.whereClause(), plan);
+            plan = buildFilters(stmt.whereClause(), plan, aliases);
         }
 
         // Step 3: Add aggregation if present
@@ -45,21 +54,54 @@ public class LogicalPlanBuilder {
         }
 
         // Step 4: Add projection for SELECT list
-        plan = buildProject(stmt.selectItems(), plan);
+        plan = buildProject(stmt.selectItems(), plan, aliases);
 
         return plan;
     }
 
     /**
+     * Maps each FROM-clause alias (lower-cased) to its real table name.
+     * Tables referenced without an alias need no entry: their qualifier is
+     * already canonical.
+     */
+    private Map<String, String> collectAliases(AST.FromClause from) {
+        Map<String, String> aliases = new HashMap<>();
+        collectAliases(from, aliases);
+        return aliases;
+    }
+
+    private void collectAliases(AST.FromClause from, Map<String, String> out) {
+        if (from instanceof AST.TableRef tableRef) {
+            if (tableRef.alias() != null) {
+                out.put(tableRef.alias().toLowerCase(), tableRef.tableName());
+            }
+        } else if (from instanceof AST.JoinClause join) {
+            collectAliases(join.left(), out);
+            collectAliases(join.right(), out);
+        }
+    }
+
+    /**
+     * Resolves a column qualifier: an alias maps to its table name, anything
+     * else (already a table name, or unknown) passes through unchanged.
+     */
+    private String canonicalQualifier(String qualifier, Map<String, String> aliases) {
+        if (qualifier == null) {
+            return null;
+        }
+        return aliases.getOrDefault(qualifier.toLowerCase(), qualifier);
+    }
+
+    /**
      * Build the FROM clause (scans and joins).
      */
-    private LogicalNode buildFrom(AST.FromClause from) {
+    private LogicalNode buildFrom(AST.FromClause from, Map<String, String> aliases) {
         if (from instanceof AST.TableRef tableRef) {
             return new LogicalScan(tableRef.tableName());
         } else if (from instanceof AST.JoinClause join) {
-            LogicalNode left = buildFrom(join.left());
-            LogicalNode right = buildFrom(join.right());
-            Expression condition = convertExpression(join.condition());
+            LogicalNode left = buildFrom(join.left(), aliases);
+            LogicalNode right = buildFrom(join.right(), aliases);
+            Expression condition = convertExpression(join.condition(), aliases);
             return new LogicalJoin(left, right, LogicalJoin.JoinType.INNER, condition);
         } else {
             throw new IllegalArgumentException("Unknown FROM clause type: " + from.getClass());
@@ -70,13 +112,13 @@ public class LogicalPlanBuilder {
      * Build Filter nodes from WHERE predicate.
      * IMPORTANT: Split AND predicates into separate Filter nodes (canonical form).
      */
-    private LogicalNode buildFilters(AST.Expr whereExpr, LogicalNode child) {
+    private LogicalNode buildFilters(AST.Expr whereExpr, LogicalNode child, Map<String, String> aliases) {
         List<AST.Expr> predicates = splitAndPredicates(whereExpr);
 
         // Create a Filter node for each predicate (bottom-up)
         LogicalNode result = child;
         for (AST.Expr predicate : predicates) {
-            Expression expr = convertExpression(predicate);
+            Expression expr = convertExpression(predicate, aliases);
             result = new LogicalFilter(expr, result);
         }
 
@@ -130,7 +172,7 @@ public class LogicalPlanBuilder {
     /**
      * Build projection for SELECT list.
      */
-    private LogicalNode buildProject(List<AST.SelectItem> selectItems, LogicalNode child) {
+    private LogicalNode buildProject(List<AST.SelectItem> selectItems, LogicalNode child, Map<String, String> aliases) {
         List<Expression> projections = new ArrayList<>();
         List<String> columnNames = new ArrayList<>();
 
@@ -139,7 +181,8 @@ public class LogicalPlanBuilder {
 
                 Expression.ColumnRef colRef;
                 if (colItem.tableName() != null) {
-                    colRef = new Expression.ColumnRef(colItem.tableName(), colItem.columnName());
+                    colRef = new Expression.ColumnRef(
+                            canonicalQualifier(colItem.tableName(), aliases), colItem.columnName());
                 } else {
                     colRef = Expression.ColumnRef.from(colItem.columnName());
                 }
@@ -161,11 +204,12 @@ public class LogicalPlanBuilder {
     /**
      * Convert AST expression to Expression object.
      */
-    private Expression convertExpression(AST.Expr expr) {
+    private Expression convertExpression(AST.Expr expr, Map<String, String> aliases) {
         switch (expr) {
             case AST.ColumnExpr col -> {
                 if (col.tableName() != null) {
-                    return new Expression.ColumnRef(col.tableName(), col.columnName());
+                    return new Expression.ColumnRef(
+                            canonicalQualifier(col.tableName(), aliases), col.columnName());
                 } else {
                     return Expression.ColumnRef.from(col.columnName());
                 }
@@ -174,8 +218,8 @@ public class LogicalPlanBuilder {
                 return new Expression.Literal(lit.value());
             }
             case AST.BinaryExpr binary -> {
-                Expression left = convertExpression(binary.left());
-                Expression right = convertExpression(binary.right());
+                Expression left = convertExpression(binary.left(), aliases);
+                Expression right = convertExpression(binary.right(), aliases);
                 Expression.BinaryOp.Operator op = convertOperator(binary.operator());
 
                 return new Expression.BinaryOp(op, left, right);
