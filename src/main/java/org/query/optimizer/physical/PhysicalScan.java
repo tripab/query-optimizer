@@ -60,7 +60,7 @@ public class PhysicalScan extends PhysicalNode implements Iterator {
         }
 
         table = catalog.getTableMetadata(tableName);
-        dataIterator = Tuple.convert(table.getData().iterator());
+        dataIterator = Tuple.convert(table.getSchema(), table.getData().iterator());
         isOpen = true;
     }
 

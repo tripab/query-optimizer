@@ -14,8 +14,14 @@ public class Tuple extends ArrayList<Attribute> {
         return null;
     }
 
+    /**
+     * Adapts row maps to tuples whose attributes follow {@code schema}'s column
+     * order. Row maps are HashMaps, so iterating their entry set would produce
+     * an arbitrary (hash-dependent) attribute order; positional consumers such
+     * as the projection operator rely on tuple order matching the schema.
+     */
     public static java.util.Iterator<Tuple> convert(
-            java.util.Iterator<Map<Schema.Column, Object>> mapIterator) {
+            Schema schema, java.util.Iterator<Map<Schema.Column, Object>> mapIterator) {
         return new java.util.Iterator<>() {
             @Override
             public boolean hasNext() {
@@ -26,8 +32,8 @@ public class Tuple extends ArrayList<Attribute> {
             public Tuple next() {
                 Map<Schema.Column, Object> map = mapIterator.next();
                 Tuple tuple = new Tuple();
-                for (Map.Entry<Schema.Column, Object> entry : map.entrySet()) {
-                    tuple.add(new Attribute(entry.getKey(), entry.getValue()));
+                for (Schema.Column column : schema.getColumns()) {
+                    tuple.add(new Attribute(column, map.get(column)));
                 }
                 return tuple;
             }

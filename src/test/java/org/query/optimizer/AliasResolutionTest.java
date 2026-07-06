@@ -160,6 +160,23 @@ public class AliasResolutionTest {
                 "forced-NLJ plan must return the same rows as the hash-join plan");
     }
 
+    @Test
+    void projectionBindsAmbiguousNameColumnsByQualifier() {
+        // SELECT c.name, o.total, p.name — both "name" columns are ambiguous in
+        // the join output; each must bind to its own table's column.
+        QueryOptimizer optimizer = new QueryOptimizer(catalog);
+        ExecutionResult result = new Executor().execute(optimizer
+                .optimize(null, buildLogical(ALIASED_THREE_WAY_JOIN), OptimizationOptions.defaults())
+                .physicalPlan());
+
+        // Order 2: Alice (Seattle) bought the Laptop for 999.99
+        Tuple row = result.tuples().stream()
+                .filter(t -> Float.valueOf(999.99f).equals(t.get(1).getValue()))
+                .findFirst().orElseThrow();
+        assertEquals("Alice", row.get(0).getValue(), "c.name must be the customer name");
+        assertEquals("Laptop", row.get(2).getValue(), "p.name must be the product name");
+    }
+
     // -------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------

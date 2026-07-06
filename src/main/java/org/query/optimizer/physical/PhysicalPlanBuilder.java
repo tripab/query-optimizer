@@ -11,6 +11,7 @@ import org.query.optimizer.parser.*;
 import org.query.optimizer.vectorized.AggregateAccumulator;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -124,16 +125,32 @@ public class PhysicalPlanBuilder {
 
     /**
      * Convert LogicalProject to PhysicalProject.
+     * <p>
+     * Each projection is resolved to an input column <em>index</em> here, using
+     * the origin table of every input column to disambiguate qualified
+     * references. A join output can carry the same column name from both sides
+     * (e.g. {@code customers.name} and {@code products.name}); resolving by
+     * name at execution time would silently return whichever side happens to
+     * come first in the combined schema.
      */
     private PhysicalNode convertProject(LogicalProject project) {
         PhysicalNode child = convertNode(project.getChild());
         Schema inputSchema = getOutputSchema(project.getChild());
+        List<String> inputOrigins = columnOrigins(project.getChild());
+
+        List<Expression> projections = project.getProjections();
+        int[] indexes = new int[projections.size()];
+        for (int i = 0; i < indexes.length; i++) {
+            indexes[i] = resolveColumnIndex(inputSchema, inputOrigins,
+                    (Expression.ColumnRef) projections.get(i));
+        }
 
         PhysicalProject physicalProject = new PhysicalProject(
-                project.getProjections(),
+                projections,
                 project.getColumnNames(),
                 child,
-                inputSchema
+                inputSchema,
+                indexes
         );
 
         if (project.getEstimatedRows() > 0) {
@@ -141,6 +158,84 @@ public class PhysicalPlanBuilder {
         }
 
         return physicalProject;
+    }
+
+    /**
+     * Returns the origin table (lower-cased) of each output column of
+     * {@code node}, in schema order; {@code null} for synthetic columns such
+     * as aggregate outputs. This is what lets a qualified column reference be
+     * resolved to the correct position when two inputs share a column name.
+     */
+    private List<String> columnOrigins(LogicalNode node) {
+        switch (node) {
+            case LogicalScan scan -> {
+                int columnCount =
+                        catalog.getTableMetadata(scan.getTableName()).getSchema().columnCount();
+                return Collections.nCopies(columnCount, scan.getTableName().toLowerCase());
+            }
+            case LogicalFilter filter -> {
+                return columnOrigins(filter.getChild());
+            }
+            case LogicalJoin join -> {
+                List<String> origins = new ArrayList<>(columnOrigins(join.getLeft()));
+                origins.addAll(columnOrigins(join.getRight()));
+                return origins;
+            }
+            case LogicalProject project -> {
+                Schema childSchema = getOutputSchema(project.getChild());
+                List<String> childOrigins = columnOrigins(project.getChild());
+                List<String> origins = new ArrayList<>();
+                for (Expression e : project.getProjections()) {
+                    Expression.ColumnRef ref = (Expression.ColumnRef) e;
+                    origins.add(childOrigins.get(resolveColumnIndex(childSchema, childOrigins, ref)));
+                }
+                return origins;
+            }
+            case LogicalAggregate agg -> {
+                Schema childSchema = getOutputSchema(agg.getChild());
+                List<String> childOrigins = columnOrigins(agg.getChild());
+                List<String> origins = new ArrayList<>();
+                for (String groupColumn : agg.getGroupByColumns()) {
+                    origins.add(childOrigins.get(childSchema.getColumnIndex(groupColumn)));
+                }
+                for (int i = 0; i < agg.getAggregateOps().size(); i++) {
+                    origins.add(null); // aggregate outputs have no origin table
+                }
+                return origins;
+            }
+            default -> throw new IllegalArgumentException("Cannot determine column origins for: "
+                    + node.getClass().getSimpleName());
+        }
+    }
+
+    /**
+     * Resolves a column reference to its index in {@code schema}. When several
+     * columns share the reference's name, the reference's table qualifier is
+     * matched against each candidate's origin table; an unqualified or
+     * unmatched reference falls back to the first name match (the historical
+     * behaviour, safe for unambiguous schemas).
+     */
+    private static int resolveColumnIndex(Schema schema, List<String> origins,
+                                          Expression.ColumnRef ref) {
+        int firstMatch = -1;
+        String wantedTable = ref.tableName() != null ? ref.tableName().toLowerCase() : null;
+
+        for (int i = 0; i < schema.columnCount(); i++) {
+            if (!schema.getColumn(i).name().equalsIgnoreCase(ref.columnName())) {
+                continue;
+            }
+            if (firstMatch < 0) {
+                firstMatch = i;
+            }
+            if (wantedTable != null && wantedTable.equals(origins.get(i))) {
+                return i;
+            }
+        }
+
+        if (firstMatch < 0) {
+            throw new IllegalArgumentException("Column not found: " + ref.getQualifiedName());
+        }
+        return firstMatch;
     }
 
     /**
