@@ -36,6 +36,7 @@ public class PhysicalHashJoin extends PhysicalNode implements Iterator {
     private boolean isOpen = false;
     private Schema.Column buildColumn;
     private Schema.Column probeColumn;
+    private long rowsProcessed;
 
     public PhysicalHashJoin(PhysicalNode left, PhysicalNode right,
                             Expression condition,
@@ -107,6 +108,7 @@ public class PhysicalHashJoin extends PhysicalNode implements Iterator {
         rightIterator = (Iterator) right;
 
         // Build phase: build hash table from right side
+        rowsProcessed = 0;
         buildHashTable();
 
         // Probe phase: open left side
@@ -136,6 +138,8 @@ public class PhysicalHashJoin extends PhysicalNode implements Iterator {
             if (currentLeftTuple == null) {
                 return null; // No more tuples
             }
+
+            rowsProcessed++; // probe-side row examined
 
             // Probe hash table
             Object probeKey = currentLeftTuple.find(probeColumn);
@@ -176,6 +180,11 @@ public class PhysicalHashJoin extends PhysicalNode implements Iterator {
         isOpen = false;
     }
 
+    @Override
+    public long rowsProcessed() {
+        return rowsProcessed;
+    }
+
     /**
      * Build hash table from right side.
      */
@@ -186,6 +195,7 @@ public class PhysicalHashJoin extends PhysicalNode implements Iterator {
 
         Tuple tuple;
         while ((tuple = rightIterator.next()) != null) {
+            rowsProcessed++; // build-side row inserted
             Object key = tuple.find(buildColumn);
             hashTable.computeIfAbsent(key, PhysicalHashJoin::apply).add(tuple);
         }

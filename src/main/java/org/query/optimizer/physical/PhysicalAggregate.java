@@ -49,6 +49,7 @@ public class PhysicalAggregate extends PhysicalNode implements Iterator {
     private Map<List<Object>, AggregateAccumulator[]>                            groups;
     private java.util.Iterator<Map.Entry<List<Object>, AggregateAccumulator[]>> emitIter;
     private boolean accumulated;
+    private long rowsProcessed;
     private boolean isOpen;
 
     public PhysicalAggregate(PhysicalNode      child,
@@ -125,9 +126,10 @@ public class PhysicalAggregate extends PhysicalNode implements Iterator {
             }
         }
 
-        groups      = new LinkedHashMap<>();
-        accumulated = false;
-        isOpen      = true;
+        groups        = new LinkedHashMap<>();
+        accumulated   = false;
+        rowsProcessed = 0;
+        isOpen        = true;
 
         childIterator.open();
     }
@@ -175,6 +177,11 @@ public class PhysicalAggregate extends PhysicalNode implements Iterator {
         isOpen        = false;
     }
 
+    @Override
+    public long rowsProcessed() {
+        return rowsProcessed;
+    }
+
     // =========================================================================
     // Internal
     // =========================================================================
@@ -182,6 +189,7 @@ public class PhysicalAggregate extends PhysicalNode implements Iterator {
     private void accumulateAll() {
         Tuple tuple;
         while ((tuple = childIterator.next()) != null) {
+            rowsProcessed++;
             List<Object> key = new ArrayList<>(groupByColIndices.length);
             for (int i : groupByColIndices) {
                 key.add(tuple.find(inputSchema.getColumn(i)));

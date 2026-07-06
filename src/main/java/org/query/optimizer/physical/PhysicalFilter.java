@@ -22,6 +22,7 @@ public class PhysicalFilter extends PhysicalNode implements Iterator {
     // Execution state
     private Iterator childIterator;
     private boolean isOpen = false;
+    private long rowsProcessed;
 
     public PhysicalFilter(Expression predicate, PhysicalNode child, Schema schema) {
         this.predicate = predicate;
@@ -73,6 +74,7 @@ public class PhysicalFilter extends PhysicalNode implements Iterator {
             throw new IllegalStateException("Child is not an Iterator");
         }
 
+        rowsProcessed = 0;
         isOpen = true;
     }
 
@@ -89,6 +91,8 @@ public class PhysicalFilter extends PhysicalNode implements Iterator {
             if (tuple == null) {
                 return null; // No more tuples
             }
+
+            rowsProcessed++;
 
             // Evaluate predicate
             Object result = predicate.evaluate(tuple, schema);
@@ -113,5 +117,10 @@ public class PhysicalFilter extends PhysicalNode implements Iterator {
         }
 
         isOpen = false;
+    }
+
+    @Override
+    public long rowsProcessed() {
+        return rowsProcessed;
     }
 }

@@ -22,6 +22,7 @@ public class PhysicalScan extends PhysicalNode implements Iterator {
     private TableMetadata table;
     private java.util.Iterator<Tuple> dataIterator;
     private boolean isOpen = false;
+    private long rowsProcessed;
 
     public PhysicalScan(String tableName, Catalog catalog) {
         this.tableName = tableName;
@@ -61,6 +62,7 @@ public class PhysicalScan extends PhysicalNode implements Iterator {
 
         table = catalog.getTableMetadata(tableName);
         dataIterator = Tuple.convert(table.getSchema(), table.getData().iterator());
+        rowsProcessed = 0;
         isOpen = true;
     }
 
@@ -71,6 +73,7 @@ public class PhysicalScan extends PhysicalNode implements Iterator {
         }
 
         if (dataIterator.hasNext()) {
+            rowsProcessed++;
             return dataIterator.next();
         }
 
@@ -86,5 +89,10 @@ public class PhysicalScan extends PhysicalNode implements Iterator {
         dataIterator = null;
         table = null;
         isOpen = false;
+    }
+
+    @Override
+    public long rowsProcessed() {
+        return rowsProcessed;
     }
 }

@@ -20,6 +20,13 @@ public class Executor {
 
     /**
      * Execution result containing tuples and statistics.
+     *
+     * <p>{@code tuplesProcessed} is the total number of rows processed across
+     * <em>all</em> operators in the plan (summed from
+     * {@link Iterator#rowsProcessed()}), not the result-row count. It is a
+     * deterministic, machine-independent proxy for how much work the plan did:
+     * a nested-loop join contributes its |L| x |R| evaluated pairs, a hash join
+     * its build+probe rows, streaming operators the rows they examined.
      */
     public record ExecutionResult(List<Tuple> tuples, long tuplesProcessed) {
 
@@ -43,7 +50,7 @@ public class Executor {
         }
 
         List<Tuple> results = new ArrayList<>();
-        long tuplesProcessed = 0;
+        long tuplesProcessed;
 
         try {
             // Open the iterator
@@ -53,15 +60,27 @@ public class Executor {
             Tuple tuple;
             while ((tuple = iterator.next()) != null) {
                 results.add(tuple);
-                tuplesProcessed++;
             }
 
+            // Collect per-operator work before close() discards state
+            tuplesProcessed = totalRowsProcessed(plan);
         } finally {
             // Always close, even if exception occurs
             iterator.close();
         }
 
         return new ExecutionResult(results, tuplesProcessed);
+    }
+
+    /**
+     * Sums {@link Iterator#rowsProcessed()} over the whole operator tree.
+     */
+    private static long totalRowsProcessed(PhysicalNode node) {
+        long total = node instanceof Iterator it ? it.rowsProcessed() : 0;
+        for (PhysicalNode child : node.getChildren()) {
+            total += totalRowsProcessed(child);
+        }
+        return total;
     }
 
     /**
@@ -94,7 +113,7 @@ public class Executor {
         }
 
         List<Tuple> results = new ArrayList<>();
-        long tuplesProcessed = 0;
+        long tuplesProcessed;
 
         try {
             iterator.open();
@@ -102,9 +121,9 @@ public class Executor {
             Tuple tuple;
             while ((tuple = iterator.next()) != null && results.size() < limit) {
                 results.add(tuple);
-                tuplesProcessed++;
             }
 
+            tuplesProcessed = totalRowsProcessed(plan);
         } finally {
             iterator.close();
         }

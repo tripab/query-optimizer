@@ -32,6 +32,7 @@ public class PhysicalProject extends PhysicalNode implements Iterator {
     // Execution state
     private Iterator childIterator;
     private boolean isOpen = false;
+    private long rowsProcessed;
 
     /**
      * Legacy constructor: resolves each projection to the first input column
@@ -110,6 +111,7 @@ public class PhysicalProject extends PhysicalNode implements Iterator {
             throw new IllegalStateException("Child is not an Iterator");
         }
 
+        rowsProcessed = 0;
         isOpen = true;
     }
 
@@ -124,6 +126,8 @@ public class PhysicalProject extends PhysicalNode implements Iterator {
         if (inputTuple == null) {
             return null;
         }
+
+        rowsProcessed++;
 
         // Copy the pre-resolved input columns into the output tuple
         Tuple outputTuple = new Tuple();
@@ -147,5 +151,10 @@ public class PhysicalProject extends PhysicalNode implements Iterator {
         }
 
         isOpen = false;
+    }
+
+    @Override
+    public long rowsProcessed() {
+        return rowsProcessed;
     }
 }

@@ -49,4 +49,16 @@ public interface Iterator {
      * Get a description of this operator (for debugging).
      */
     String describe();
+
+    /**
+     * Rows this operator processed during the current execution (i.e. since its
+     * last {@code open()}): input rows examined for streaming operators, pairs
+     * evaluated (plus inner rows materialized) for a nested-loop join, and
+     * build+probe rows for a hash join. Excludes the work of child operators —
+     * the executor sums this over the whole operator tree to obtain a
+     * deterministic, machine-independent measure of plan work.
+     */
+    default long rowsProcessed() {
+        return 0;
+    }
 }

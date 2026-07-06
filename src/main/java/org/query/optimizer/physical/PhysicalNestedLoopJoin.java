@@ -55,6 +55,7 @@ public class PhysicalNestedLoopJoin extends PhysicalNode implements Iterator {
     private int rightIndex;
     private Tuple currentLeftTuple;
     private boolean isOpen = false;
+    private long rowsProcessed;
 
     public PhysicalNestedLoopJoin(PhysicalNode left, PhysicalNode right,
                                   Expression condition,
@@ -141,6 +142,7 @@ public class PhysicalNestedLoopJoin extends PhysicalNode implements Iterator {
         leftIterator.open();
 
         // Materialize the inner side once; every left tuple re-scans this list
+        rowsProcessed = 0;
         Iterator rightIterator = (Iterator) right;
         rightIterator.open();
         rightRows = new ArrayList<>();
@@ -149,6 +151,7 @@ public class PhysicalNestedLoopJoin extends PhysicalNode implements Iterator {
             rightRows.add(rightTuple);
         }
         rightIterator.close();
+        rowsProcessed += rightRows.size(); // materializing the inner side
 
         // Get first left tuple
         currentLeftTuple = leftIterator.next();
@@ -166,6 +169,7 @@ public class PhysicalNestedLoopJoin extends PhysicalNode implements Iterator {
         while (currentLeftTuple != null) {
             if (rightIndex < rightRows.size()) {
                 Tuple rightTuple = rightRows.get(rightIndex++);
+                rowsProcessed++; // one (left, right) pair evaluated
 
                 // Check join condition with each side resolved against its own
                 // schema/tuple, then emit the combined tuple only on a match.
@@ -200,6 +204,11 @@ public class PhysicalNestedLoopJoin extends PhysicalNode implements Iterator {
         rightRows = null;
         currentLeftTuple = null;
         isOpen = false;
+    }
+
+    @Override
+    public long rowsProcessed() {
+        return rowsProcessed;
     }
 
     /**

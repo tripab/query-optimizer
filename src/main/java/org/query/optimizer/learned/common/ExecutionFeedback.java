@@ -23,8 +23,10 @@ package org.query.optimizer.learned.common;
  * @param hintSet         the hint set that produced this plan
  * @param planFeatures    featurized plan vector ({@link PlanFeaturizer#FEATURE_DIM} elements)
  * @param actualLatencyMs wall-clock execution time in milliseconds
- * @param tuplesProcessed rows examined by the executor (from
- *                        {@code ExecutionResult.tuplesProcessed()})
+ * @param tuplesProcessed total rows processed across all plan operators (from
+ *                        {@code ExecutionResult.tuplesProcessed()}) — a
+ *                        deterministic proxy for plan work; an NLJ contributes
+ *                        its evaluated pairs, a hash join its build+probe rows
  * @param estimatedCost   cost-model prediction for this plan
  * @param estimatedRows   cardinality-estimator prediction for this plan
  */

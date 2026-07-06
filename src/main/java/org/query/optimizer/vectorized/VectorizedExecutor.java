@@ -29,6 +29,11 @@ import java.util.List;
  * skipped without touching their column data.
  *
  * <h2>Shared result type</h2>
+ * <p>Note: this engine reports {@code tuplesProcessed} as the number of result
+ * rows it materialized, not the per-operator work sum the Volcano
+ * {@code Executor} reports — vectorized operators do not implement
+ * {@code Iterator.rowsProcessed()}.
+ *
  * <p>Returning {@link ExecutionResult} (the same class used by the Volcano executor)
  * means correctness tests can compare the two engines with a single
  * {@code assertEquals(volcanoResult.tuples(), vectorizedResult.tuples())} call —
