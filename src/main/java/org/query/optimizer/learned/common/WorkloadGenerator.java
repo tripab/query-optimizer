@@ -229,8 +229,13 @@ public class WorkloadGenerator {
     }
 
     /**
-     * Returns a random age in the range [20, 60] — choosing the upper 75% of
-     * the [20, 65] distribution so the filter passes a non-trivial fraction.
+     * Returns a random age threshold spanning the full observed [min, max]
+     * range, so {@code age > threshold} selectivities run from ~100% down to
+     * ~0% across the workload. The spread matters for the learned optimizers:
+     * which rewrite rules pay off depends on filter selectivity (e.g. pushing
+     * a projection below an almost-pass-nothing filter processes every row for
+     * nothing), so a workload whose filters all pass ~50% of rows gives an
+     * adaptive strategy nothing to adapt to.
      */
     private int randomAge() {
         int min = 20;
@@ -241,16 +246,16 @@ public class WorkloadGenerator {
             if (s != null && s.minValue() instanceof Integer lo
                           && s.maxValue() instanceof Integer hi) {
                 min = lo;
-                // pick a threshold in the lower half so ~50 % of rows pass
-                max = lo + (hi - lo) / 2;
+                max = hi;
             }
         }
         return min + random.nextInt(Math.max(1, max - min));
     }
 
     /**
-     * Returns a random price threshold in the lower half of the observed range
-     * so the filter is selective but not degenerate.
+     * Returns a random price threshold spanning the full observed range —
+     * see {@link #randomAge()} for why the workload needs the full
+     * selectivity spread.
      */
     private float randomPrice() {
         float min = 5.0f;
@@ -261,7 +266,7 @@ public class WorkloadGenerator {
             if (s != null && s.minValue() instanceof Float lo
                           && s.maxValue() instanceof Float hi) {
                 min = lo;
-                max = lo + (hi - lo) / 2.0f;
+                max = hi;
             }
         }
         return min + random.nextFloat() * (max - min);
@@ -273,6 +278,11 @@ public class WorkloadGenerator {
         return String.format("%s.total > %.2f", alias, threshold);
     }
 
+    /**
+     * Returns a random order-total threshold spanning the full observed range —
+     * see {@link #randomAge()} for why the workload needs the full
+     * selectivity spread.
+     */
     private float randomOrderTotal() {
         float min = 10.0f;
         float max = 500.0f;
@@ -282,7 +292,7 @@ public class WorkloadGenerator {
             if (s != null && s.minValue() instanceof Float lo
                           && s.maxValue() instanceof Float hi) {
                 min = lo;
-                max = lo + (hi - lo) / 2.0f;
+                max = hi;
             }
         }
         return min + random.nextFloat() * (max - min);
