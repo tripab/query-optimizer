@@ -19,6 +19,15 @@ import java.util.Random;
  * different bootstrap sample of the replay buffer, they naturally disagree on
  * plans the model hasn't seen, producing well-calibrated uncertainty estimates.
  *
+ * <h2>Log-space regression</h2>
+ * <p>Logical costs span orders of magnitude (a hash-join plan may cost ~10
+ * units where its nested-loop sibling costs ~40,000), and online SGD with MSE
+ * on raw values of that scale diverges — this is what used to NaN the model on
+ * its first retrain and reduce Thompson sampling to a constant first-arm
+ * policy. Members therefore regress {@code log1p(logicalCost)}; {@link #predict}
+ * maps each member's output back with {@code expm1}, so the returned mean and
+ * variance stay in cost units for the {@link ThompsonSampler}.
+ *
  * <h2>Uncertainty estimation</h2>
  * <p>{@link #predict} returns both the ensemble mean prediction and its variance.
  * {@link ThompsonSampler} draws a Gaussian sample from this distribution for each
@@ -38,8 +47,8 @@ public class PlanValueModel {
     static final int RETRAIN_INTERVAL = 10;
 
     private static final int[]   LAYER_SIZES    = {PlanFeaturizer.FEATURE_DIM, 64, 32, 1};
-    private static final double  LEARNING_RATE  = 0.001;
-    private static final int     RETRAIN_EPOCHS = 20;
+    private static final double  LEARNING_RATE  = 0.0001;
+    private static final int     RETRAIN_EPOCHS = 40;
 
     private SimpleNeuralNetwork[]        ensemble;
     private final List<ExecutionFeedback> replayBuffer = new ArrayList<>();
@@ -77,7 +86,10 @@ public class PlanValueModel {
         double sum   = 0.0;
         double sumSq = 0.0;
         for (SimpleNeuralNetwork member : ensemble) {
-            double p = member.predict(planFeatures)[0];
+            // Members predict log1p(cost); map back to cost units. The cap
+            // keeps expm1 finite even if a member's output drifts high.
+            double logPrediction = Math.min(member.predict(planFeatures)[0], 50.0);
+            double p = Math.expm1(logPrediction);
             sum   += p;
             sumSq += p * p;
         }
@@ -131,7 +143,7 @@ public class PlanValueModel {
                 for (ExecutionFeedback fb : sample) {
                     ensemble[i].trainStep(
                             fb.planFeatures(),
-                            new double[]{fb.logicalCost()},
+                            new double[]{Math.log1p(fb.logicalCost())},
                             mse);
                 }
             }
