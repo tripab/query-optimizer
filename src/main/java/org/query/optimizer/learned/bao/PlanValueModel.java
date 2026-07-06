@@ -124,7 +124,8 @@ public class PlanValueModel {
     private void retrain() {
         LossFunction mse = LossFunction.mse();
         for (int i = 0; i < ENSEMBLE_SIZE; i++) {
-            ensemble[i] = new SimpleNeuralNetwork(LAYER_SIZES, LEARNING_RATE, new Random(random.nextLong()));
+            ensemble[i] = new SimpleNeuralNetwork(LAYER_SIZES, LEARNING_RATE, new Random(random.nextLong()),
+                    SimpleNeuralNetwork.DEFAULT_GRADIENT_CLIP);
             List<ExecutionFeedback> sample = bootstrapSample(replayBuffer);
             for (int epoch = 0; epoch < RETRAIN_EPOCHS; epoch++) {
                 for (ExecutionFeedback fb : sample) {
@@ -152,7 +153,8 @@ public class PlanValueModel {
     private SimpleNeuralNetwork[] createFreshEnsemble() {
         SimpleNeuralNetwork[] members = new SimpleNeuralNetwork[ENSEMBLE_SIZE];
         for (int i = 0; i < ENSEMBLE_SIZE; i++) {
-            members[i] = new SimpleNeuralNetwork(LAYER_SIZES, LEARNING_RATE, new Random(random.nextLong()));
+            members[i] = new SimpleNeuralNetwork(LAYER_SIZES, LEARNING_RATE, new Random(random.nextLong()),
+                    SimpleNeuralNetwork.DEFAULT_GRADIENT_CLIP);
         }
         return members;
     }

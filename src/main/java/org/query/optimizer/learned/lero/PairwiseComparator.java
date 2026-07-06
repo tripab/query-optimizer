@@ -58,8 +58,10 @@ public class PairwiseComparator {
     }
 
     public PairwiseComparator(Random random) {
-        this.encoder    = new SimpleNeuralNetwork(ENCODER_SIZES,    LEARNING_RATE, random);
-        this.classifier = new SimpleNeuralNetwork(CLASSIFIER_SIZES, LEARNING_RATE, random);
+        this.encoder    = new SimpleNeuralNetwork(ENCODER_SIZES,    LEARNING_RATE, random,
+                SimpleNeuralNetwork.DEFAULT_GRADIENT_CLIP);
+        this.classifier = new SimpleNeuralNetwork(CLASSIFIER_SIZES, LEARNING_RATE, random,
+                SimpleNeuralNetwork.DEFAULT_GRADIENT_CLIP);
     }
 
     // -------------------------------------------------------------------------

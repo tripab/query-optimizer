@@ -36,14 +36,41 @@ import java.util.Random;
  * <p>Online SGD — one weight update per call to {@link #trainStep}. No mini-batching.
  * This is sufficient given the small network sizes used here (largest weight matrix
  * is 34×64 = 2 176 parameters).
+ *
+ * <h2>Numerical safety</h2>
+ * <p>Two safeguards protect the weights:
+ * <ul>
+ *   <li><b>Non-finite guards (always on):</b> non-finite gradient components
+ *       are dropped and any update whose product {@code lr * delta * activation}
+ *       is non-finite is skipped. A healthy training trajectory is unaffected
+ *       (a non-finite update would have permanently poisoned the weights), but
+ *       one pathological example can no longer make the network predict NaN
+ *       forever.</li>
+ *   <li><b>Gradient clipping (opt-in):</b> a positive {@code gradientClip}
+ *       bounds every back-propagated gradient component elementwise. Consumers
+ *       that train online on noisy, coarsely-scaled targets (Bao's value model,
+ *       Lero's comparator — see {@link #DEFAULT_GRADIENT_CLIP}) enable it;
+ *       consumers with well-scaled targets keep their exact legacy trajectory
+ *       by leaving it off.</li>
+ * </ul>
  */
 public class SimpleNeuralNetwork {
+
+    /**
+     * Elementwise gradient bound used by the learned-optimizer networks.
+     * Large enough that well-scaled (e.g. log-space) regression rarely
+     * triggers it; small enough to stop the explosion spiral where gradients
+     * and activations amplify each other into NaN within a few epochs.
+     */
+    public static final double DEFAULT_GRADIENT_CLIP = 5.0;
 
     private final int[] layerSizes;
     private double[][] weights;  // weights[i]: flattened (layerSizes[i+1] x layerSizes[i])
     private double[][] biases;   // biases[i]:  layerSizes[i+1]
     private final double learningRate;
     private final Random random;
+    /** Elementwise gradient bound; 0 disables clipping. */
+    private final double gradientClip;
 
     // -------------------------------------------------------------------------
     // Construction
@@ -54,12 +81,22 @@ public class SimpleNeuralNetwork {
     }
 
     public SimpleNeuralNetwork(int[] layerSizes, double learningRate, Random random) {
+        this(layerSizes, learningRate, random, 0.0);
+    }
+
+    /**
+     * @param gradientClip elementwise bound applied to every back-propagated
+     *                     gradient component; pass 0 to disable clipping
+     */
+    public SimpleNeuralNetwork(int[] layerSizes, double learningRate, Random random,
+                               double gradientClip) {
         if (layerSizes.length < 2) {
             throw new IllegalArgumentException("Need at least 2 layer sizes (input + output)");
         }
         this.layerSizes   = layerSizes.clone();
         this.learningRate = learningRate;
         this.random       = random;
+        this.gradientClip = gradientClip;
         initializeWeights();
     }
 
@@ -199,20 +236,20 @@ public class SimpleNeuralNetwork {
      * @return gradient of the loss w.r.t. this network's input
      */
     public double[] backpropReturnInputGrad(ForwardResult fwd, double[] outputGrad) {
-        double[] delta = outputGrad;
+        double[] delta = clip(outputGrad);
         for (int i = weights.length - 1; i >= 0; i--) {
             if (i < weights.length - 1) {
                 double[] rd = ActivationFunction.reluDerivative(fwd.activations()[i + 1]);
                 delta = elementwiseMultiply(delta, rd);
             }
             updateWeights(i, delta, fwd.activations()[i]);
-            delta = matTVecMultiply(weights[i], delta, layerSizes[i], layerSizes[i + 1]);
+            delta = clip(matTVecMultiply(weights[i], delta, layerSizes[i], layerSizes[i + 1]));
         }
         return delta;
     }
 
     private void backprop(double[][] activations, double[] outputGrad) {
-        double[] delta = outputGrad;
+        double[] delta = clip(outputGrad);
 
         for (int i = weights.length - 1; i >= 0; i--) {
             // Apply ReLU derivative for hidden layers (not the output layer)
@@ -225,9 +262,29 @@ public class SimpleNeuralNetwork {
 
             // Propagate delta backwards (not needed for the input layer)
             if (i > 0) {
-                delta = matTVecMultiply(weights[i], delta, layerSizes[i], layerSizes[i + 1]);
+                delta = clip(matTVecMultiply(weights[i], delta, layerSizes[i], layerSizes[i + 1]));
             }
         }
+    }
+
+    /**
+     * Drops non-finite gradient components (from an already-poisoned activation
+     * or an extreme loss gradient) so they cannot propagate; when clipping is
+     * enabled, also clamps every component to ±{@code gradientClip}.
+     */
+    private double[] clip(double[] gradient) {
+        double[] out = new double[gradient.length];
+        for (int i = 0; i < gradient.length; i++) {
+            double g = gradient[i];
+            if (!Double.isFinite(g)) {
+                out[i] = 0.0;
+            } else if (gradientClip > 0) {
+                out[i] = Math.max(-gradientClip, Math.min(gradientClip, g));
+            } else {
+                out[i] = g;
+            }
+        }
+        return out;
     }
 
     private void updateWeights(int layer, double[] delta, double[] input) {
@@ -235,7 +292,12 @@ public class SimpleNeuralNetwork {
         int inSize  = layerSizes[layer];
         for (int j = 0; j < outSize; j++) {
             for (int k = 0; k < inSize; k++) {
-                weights[layer][j * inSize + k] -= learningRate * delta[j] * input[k];
+                double update = learningRate * delta[j] * input[k];
+                // A non-finite activation (e.g. from a NaN feature) must not
+                // poison the weights; skip just that component.
+                if (Double.isFinite(update)) {
+                    weights[layer][j * inSize + k] -= update;
+                }
             }
             biases[layer][j] -= learningRate * delta[j];
         }
