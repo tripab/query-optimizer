@@ -38,8 +38,8 @@ import java.util.Map;
  * by {@link #getTrainingPairs()}.
  *
  * <h2>Exploration cost</h2>
- * <p>Each explored query executes up to 5 plan variants instead of 1, so it
- * costs up to 5× more than a normal query. Lero limits exploration to the
+ * <p>Each explored query executes up to six plan variants instead of one, so it
+ * costs several times more than a normal query. Lero limits exploration to the
  * warm-up phase and periodic refreshes (see {@link LeroOptimizer}).
  */
 public class PlanExplorer {

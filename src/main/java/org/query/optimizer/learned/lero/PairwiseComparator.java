@@ -13,8 +13,8 @@ import java.util.Random;
  *
  * <h2>Architecture</h2>
  * <pre>
- *   Plan A features (34) ──→ SharedEncoder (34→64→32) ──→ embA (32)
- *   Plan B features (34) ──→ SharedEncoder (34→64→32) ──→ embB (32)
+ *   Plan A features (FEATURE_DIM) ──→ SharedEncoder (FEATURE_DIM→64→32) ──→ embA (32)
+ *   Plan B features (FEATURE_DIM) ──→ SharedEncoder (FEATURE_DIM→64→32) ──→ embB (32)
  *   [embA ; embB ; embA−embB]  (96)  ──→  Classifier (96→32→1)
  *   Output: sigmoid  →  P(plan A is faster than plan B)
  * </pre>

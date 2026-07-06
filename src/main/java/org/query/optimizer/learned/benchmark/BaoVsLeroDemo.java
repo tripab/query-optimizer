@@ -44,9 +44,10 @@ import java.util.Map;
  *   <li><b>Cost-based join-algorithm mix</b> — how the cost model distributes
  *       hash vs. nested-loop joins across the workload.</li>
  *   <li><b>Wall-clock distribution</b> — each strategy's total latency as a
- *       median and IQR over {@link #WALL_CLOCK_REPEATS} timed repeats. This is
- *       the only machine-dependent section; every section above is seeded and
- *       reproduces identically across machines.</li>
+ *       median and IQR over {@link #WALL_CLOCK_REPEATS} timed repeats. The
+ *       sections above report decisions driven by a deterministic work measure
+ *       (reproducible across machines); millisecond figures everywhere scale
+ *       with the host, which is why wall-clock gets a distribution.</li>
  * </ol>
  *
  * <h2>How to run</h2>
@@ -210,7 +211,7 @@ public class BaoVsLeroDemo {
         System.out.printf("  Lero total:   %,d ms (%+.1f%% vs. default)%n",
                 results.leroTotal(),
                 pctChange(results.defaultTotal(), results.leroTotal()));
-        System.out.printf("  Oracle total: %,d ms (%+.1f%% vs. default — theoretical ceiling)%n",
+        System.out.printf("  Oracle total: %,d ms (%+.1f%% vs. default — per-query best-plan ceiling)%n",
                 results.oracleTotal(),
                 pctChange(results.defaultTotal(), results.oracleTotal()));
         System.out.println();

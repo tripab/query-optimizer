@@ -29,8 +29,9 @@ import java.util.Random;
  * <ol>
  *   <li><b>DEFAULT</b> — always executes the plan produced by the DEFAULT hint
  *       set (baseline).</li>
- *   <li><b>ORACLE</b> — executes every plan variant and keeps the one with the
- *       lowest actual latency (theoretical ceiling — cannot be beaten).</li>
+ *   <li><b>ORACLE</b> — executes every plan variant and keeps the one that did
+ *       the least tuple-processing work (the deterministic per-query plan-choice
+ *       ceiling; see {@link #pickOracleArm}).</li>
  *   <li><b>BAO</b> — Thompson Sampling bandit optimizer
  *       ({@link BanditOptimizer}).</li>
  *   <li><b>LERO</b> — pairwise learning-to-rank optimizer

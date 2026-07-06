@@ -16,8 +16,10 @@ package org.query.optimizer.learned.common;
  * <pre>
  *   logicalCost = tuplesProcessed × 0.01 + max(actualLatencyMs, 0)
  * </pre>
- * For large datasets the two terms converge; for micro-benchmarks on small
- * tables the tuple-count term dominates, smoothing out timer noise.
+ * {@code tuplesProcessed} is the per-operator work sum, so plan differences
+ * (a nested-loop join's evaluated pairs vs. a hash join's build+probe rows)
+ * dominate the deterministic term; wall-clock only tips the balance when it
+ * is large enough to matter.
  *
  * @param querySQL        the original SQL string
  * @param hintSet         the hint set that produced this plan

@@ -405,8 +405,9 @@ disagreement analysis, and warm-up vs. warm-phase statistics.
 
 Runs the same workload through all four strategies -- DEFAULT, ORACLE, BAO, and LERO --
 and produces both per-query and aggregate metrics. The ORACLE strategy executes every
-distinct plan variant and keeps the cheapest one, giving the theoretical performance
-ceiling no strategy can beat.
+distinct plan variant and keeps the one that did the least tuple-processing work
+(a deterministic, machine-independent measure summed across all plan operators),
+giving the per-query plan-choice ceiling the learned strategies are judged against.
 
 Metrics computed per strategy:
 
@@ -450,9 +451,10 @@ through `LearnedOptimizerBenchmark`, and prints a seven-section report:
 6. **Cost-based join-algorithm mix** -- how the cost model distributes hash vs. nested-loop joins
    across the workload
 7. **Wall-clock distribution** -- each strategy's total latency as a median and IQR over a handful of
-   timed repeats (after a warm-up pass). Sections 1-6 are seeded and reproduce identically on any
-   machine; this is the only machine-dependent section, so it is reported as a distribution rather
-   than a single noisy total
+   timed repeats (after a warm-up pass). Sections 1-6 report *decisions* (arm choices, accuracies,
+   win/loss counts) that are driven by a deterministic work measure and reproduce across machines;
+   their millisecond figures, like this section's, still scale with the host. Wall-clock is reported
+   as a distribution rather than a single noisy total
 
 ```bash
 mvn -q exec:java -Dexec.mainClass=org.query.optimizer.learned.benchmark.BaoVsLeroDemo

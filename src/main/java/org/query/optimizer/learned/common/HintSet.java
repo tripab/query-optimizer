@@ -20,10 +20,11 @@ import java.util.Objects;
  * shape.
  *
  * <h2>Predefined arms</h2>
- * <p>Five arms are defined as public constants. Five arms is deliberately small:
+ * <p>Six arms are defined as public constants. A small arm space is deliberate:
  * it keeps the exploration cost tractable while still producing meaningfully
  * different physical plans (full-optimisation with hash join, full-optimisation
- * with NLJ, no-pushdown variants, and a minimal-optimisation baseline).
+ * with NLJ, no-pushdown variants, a minimal-optimisation baseline, and a
+ * preserve-input-join-order variant).
  *
  * <h2>Extending the arm space</h2>
  * <p>Additional knobs — join-order hints, index preferences, batch-size
@@ -119,7 +120,7 @@ public final class HintSet {
     // -------------------------------------------------------------------------
 
     /**
-     * Returns an unmodifiable list of all five predefined hint sets, in the
+     * Returns an unmodifiable list of all six predefined hint sets, in the
      * order they are defined above.  This list is the default arm space for
      * the Bao bandit.
      */
